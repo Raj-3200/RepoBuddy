@@ -31,22 +31,19 @@ def compute_graph_metrics(graph: nx.DiGraph) -> dict:
     total_degree = {n: in_degree.get(n, 0) + out_degree.get(n, 0) for n in graph.nodes()}
     sorted_by_degree = sorted(total_degree.items(), key=lambda x: x[1], reverse=True)
     metrics["central_files"] = [
-        {"path": path, "connections": count}
-        for path, count in sorted_by_degree[:10]
+        {"path": path, "connections": count} for path, count in sorted_by_degree[:10]
     ]
 
     # Most depended-on files
     sorted_by_in = sorted(in_degree.items(), key=lambda x: x[1], reverse=True)
     metrics["most_imported"] = [
-        {"path": path, "importers": count}
-        for path, count in sorted_by_in[:10]
+        {"path": path, "importers": count} for path, count in sorted_by_in[:10]
     ]
 
     # Files with most dependencies
     sorted_by_out = sorted(out_degree.items(), key=lambda x: x[1], reverse=True)
     metrics["most_dependencies"] = [
-        {"path": path, "dependencies": count}
-        for path, count in sorted_by_out[:10]
+        {"path": path, "dependencies": count} for path, count in sorted_by_out[:10]
     ]
 
     return metrics
@@ -90,10 +87,7 @@ def identify_modules(graph: nx.DiGraph) -> list[dict]:
     dir_groups: dict[str, list[str]] = {}
     for node in graph.nodes():
         parts = node.split("/")
-        if len(parts) > 1:
-            module = parts[0]
-        else:
-            module = "root"
+        module = parts[0] if len(parts) > 1 else "root"
         dir_groups.setdefault(module, []).append(node)
 
     modules = []
@@ -108,13 +102,15 @@ def identify_modules(graph: nx.DiGraph) -> list[dict]:
                 else:
                     external_edges += 1
 
-        modules.append({
-            "name": module_name,
-            "file_count": len(files),
-            "internal_edges": internal_edges,
-            "external_edges": external_edges,
-            "cohesion": internal_edges / max(internal_edges + external_edges, 1),
-        })
+        modules.append(
+            {
+                "name": module_name,
+                "file_count": len(files),
+                "internal_edges": internal_edges,
+                "external_edges": external_edges,
+                "cohesion": internal_edges / max(internal_edges + external_edges, 1),
+            }
+        )
 
     return modules
 
@@ -139,14 +135,16 @@ def compute_risk_scores(graph: nx.DiGraph) -> list[dict]:
         )
 
         if risk_score > 0.3:
-            risk_items.append({
-                "path": node,
-                "risk_score": round(risk_score, 3),
-                "in_degree": in_deg,
-                "out_degree": out_deg,
-                "betweenness": round(centrality, 4),
-                "reason": _risk_reason(in_deg, out_deg, centrality),
-            })
+            risk_items.append(
+                {
+                    "path": node,
+                    "risk_score": round(risk_score, 3),
+                    "in_degree": in_deg,
+                    "out_degree": out_deg,
+                    "betweenness": round(centrality, 4),
+                    "reason": _risk_reason(in_deg, out_deg, centrality),
+                }
+            )
 
     risk_items.sort(key=lambda x: x["risk_score"], reverse=True)
     return risk_items[:20]

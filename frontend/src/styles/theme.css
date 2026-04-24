@@ -1,0 +1,288 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 15px;
+  --background: #0c0c10;
+  --foreground: #f0efed;
+  --card: #16161c;
+  --card-foreground: #f0efed;
+  --popover: #1c1c24;
+  --popover-foreground: #f0efed;
+  --primary: #7c6cf5;
+  --primary-foreground: #ffffff;
+  --secondary: #1c1c24;
+  --secondary-foreground: #f0efed;
+  --muted: #1c1c24;
+  --muted-foreground: #8a8aa0;
+  --accent: #7c6cf5;
+  --accent-foreground: #ffffff;
+  --destructive: #f25353;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.07);
+  --input: rgba(255, 255, 255, 0.06);
+  --input-background: rgba(255, 255, 255, 0.05);
+  --switch-background: #2a2a38;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: rgba(124, 108, 245, 0.5);
+  --chart-1: #7c6cf5;
+  --chart-2: #5b9cf6;
+  --chart-3: #3dd68c;
+  --chart-4: #f5a051;
+  --chart-5: #f25353;
+  --radius: 0.5rem;
+  --sidebar: #0f0f14;
+  --sidebar-foreground: #f0efed;
+  --sidebar-primary: #7c6cf5;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgba(255, 255, 255, 0.06);
+  --sidebar-accent-foreground: #f0efed;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-ring: rgba(124, 108, 245, 0.5);
+
+  /* RepoSage custom tokens */
+  --rs-base: #0c0c10;
+  --rs-sidebar: #0f0f14;
+  --rs-surface-1: #131318;
+  --rs-surface-2: #18181f;
+  --rs-surface-3: #1e1e28;
+  --rs-border: rgba(255, 255, 255, 0.07);
+  --rs-border-strong: rgba(255, 255, 255, 0.12);
+  --rs-text-primary: #f0efed;
+  --rs-text-secondary: #8a8aa0;
+  --rs-text-muted: #52526a;
+  --rs-accent: #7c6cf5;
+  --rs-accent-dim: rgba(124, 108, 245, 0.15);
+  --rs-accent-hover: #9180f8;
+  --rs-blue: #5b9cf6;
+  --rs-blue-dim: rgba(91, 156, 246, 0.15);
+  --rs-green: #3dd68c;
+  --rs-green-dim: rgba(61, 214, 140, 0.12);
+  --rs-amber: #f5a051;
+  --rs-amber-dim: rgba(245, 160, 81, 0.12);
+  --rs-red: #f25353;
+  --rs-red-dim: rgba(242, 83, 83, 0.12);
+
+  /* ── Premium design layer (Pass 1) ─────────────────────────── */
+  /* Layered surfaces — used for editorial depth, not glassmorphism */
+  --rs-surface-0: #0a0a0e;
+  --rs-surface-elev: #1b1b23;
+  --rs-surface-hover: rgba(255, 255, 255, 0.035);
+  --rs-surface-active: rgba(124, 108, 245, 0.07);
+
+  /* Hairlines */
+  --rs-hairline: rgba(255, 255, 255, 0.05);
+  --rs-hairline-strong: rgba(255, 255, 255, 0.09);
+  --rs-divider: rgba(255, 255, 255, 0.04);
+
+  /* Severity & confidence (semantic, not raw colors) */
+  --rs-sev-critical: #f25353;
+  --rs-sev-high: #f5a051;
+  --rs-sev-medium: #e5c07b;
+  --rs-sev-low: #5b9cf6;
+  --rs-sev-info: #8a8aa0;
+
+  --rs-conf-deterministic: #3dd68c;
+  --rs-conf-strong: #5b9cf6;
+  --rs-conf-moderate: #e5c07b;
+  --rs-conf-weak: #f5a051;
+  --rs-conf-unknown: #52526a;
+
+  /* Spacing scale (8pt base, with refined micro steps) */
+  --rs-space-0: 0;
+  --rs-space-1: 2px;
+  --rs-space-2: 4px;
+  --rs-space-3: 8px;
+  --rs-space-4: 12px;
+  --rs-space-5: 16px;
+  --rs-space-6: 20px;
+  --rs-space-7: 24px;
+  --rs-space-8: 32px;
+  --rs-space-9: 40px;
+  --rs-space-10: 56px;
+  --rs-space-11: 72px;
+  --rs-space-12: 96px;
+
+  /* Type scale — editorial, not dashboard */
+  --rs-text-display: 28px; /* page hero h1 */
+  --rs-text-title: 20px; /* section title */
+  --rs-text-heading: 15px; /* card heading */
+  --rs-text-body: 13px; /* body */
+  --rs-text-meta: 11.5px; /* meta */
+  --rs-text-micro: 10.5px; /* labels */
+  --rs-text-eyebrow: 10px; /* eyebrow uppercase */
+
+  --rs-leading-tight: 1.25;
+  --rs-leading-snug: 1.4;
+  --rs-leading-normal: 1.55;
+  --rs-leading-relaxed: 1.65;
+
+  --rs-tracking-tight: -0.02em;
+  --rs-tracking-snug: -0.01em;
+  --rs-tracking-normal: 0;
+  --rs-tracking-eyebrow: 0.08em;
+
+  /* Radius scale */
+  --rs-radius-sm: 4px;
+  --rs-radius-md: 6px;
+  --rs-radius-lg: 10px;
+  --rs-radius-xl: 14px;
+  --rs-radius-pill: 999px;
+
+  /* Shadows — used sparingly */
+  --rs-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --rs-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --rs-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.4);
+  --rs-glow-accent:
+    0 0 0 1px rgba(124, 108, 245, 0.35), 0 0 24px -6px rgba(124, 108, 245, 0.4);
+
+  /* Motion tokens */
+  --rs-ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  --rs-ease-entrance: cubic-bezier(0.16, 1, 0.3, 1);
+  --rs-ease-exit: cubic-bezier(0.7, 0, 0.84, 0);
+  --rs-dur-instant: 80ms;
+  --rs-dur-fast: 160ms;
+  --rs-dur-base: 240ms;
+  --rs-dur-slow: 360ms;
+  --rs-dur-page: 320ms;
+
+  /* Layout */
+  --rs-content-narrow: 760px;
+  --rs-content-base: 980px;
+  --rs-content-wide: 1180px;
+  --rs-content-full: 1440px;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 3px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 3px);
+  --radius-xl: calc(var(--radius) + 8px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    box-sizing: border-box;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family:
+      "Inter",
+      -apple-system,
+      BlinkMacSystemFont,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html {
+    font-size: var(--font-size);
+    color-scheme: dark;
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: -0.015em;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: -0.01em;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-sm);
+    font-weight: 500;
+    line-height: 1.5;
+    cursor: pointer;
+  }
+
+  input {
+    font-size: var(--text-sm);
+    font-weight: 400;
+    line-height: 1.5;
+  }
+
+  code,
+  pre,
+  .mono {
+    font-family: "Geist Mono", "JetBrains Mono", "Fira Code", monospace;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+}

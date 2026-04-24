@@ -53,6 +53,15 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF"]
+# E501: formatter handles line length; don't double-enforce.
+# B008: FastAPI uses Depends()/File()/Query() in default args by design.
+# UP042: str enums are still widely used; not worth bulk-converting.
+# RUF002/RUF003: unicode chars in docstrings/comments are intentional.
+ignore = ["E501", "B008", "UP042", "RUF002", "RUF003", "SIM102"]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["N999", "E402"]
+"tests/*.py" = ["B008"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

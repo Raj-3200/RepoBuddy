@@ -1,0 +1,1286 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  Search,
+  X,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Filter,
+  Info,
+  ChevronRight,
+  Sparkles,
+  FileCode,
+  AlertTriangle,
+  ArrowRight,
+  Layers,
+  Link,
+  Loader2,
+  GitBranch,
+} from "lucide-react";
+import { useAppStore } from "@/lib/store";
+import {
+  getGraph,
+  type GraphNode as APIGraphNode,
+  type GraphEdge as APIGraphEdge,
+} from "@/lib/api";
+
+interface GraphNode {
+  id: string;
+  label: string;
+  type: "core" | "module" | "util" | "leaf" | "external";
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  r: number;
+  risk?: "high" | "medium";
+  module?: string;
+  imports?: string[];
+  exports?: string[];
+  dependents?: string[];
+  lines?: number;
+}
+
+interface GraphEdge {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+// Data is now fetched from API — see convertApiNodes/convertApiEdges
+
+const typeColors: Record<string, string> = {
+  core: "#7C6CF5",
+  module: "#5B9CF6",
+  util: "#3DD68C",
+  leaf: "#8A8AA0",
+  external: "#F5A051",
+  file: "#5B9CF6",
+  directory: "#3DD68C",
+  function: "#7C6CF5",
+  class: "#F5A051",
+};
+
+const moduleColors: Record<string, string> = {
+  Root: "#7C6CF5",
+  API: "#5B9CF6",
+  Auth: "#3DD68C",
+  Data: "#F5A051",
+  Models: "#F25353",
+  Utils: "#8A8AA0",
+  Events: "#9180F8",
+  Services: "#5B9CF6",
+};
+
+function mapNodeType(type: string): GraphNode["type"] {
+  if (["core", "module", "util", "leaf", "external"].includes(type))
+    return type as GraphNode["type"];
+  if (type === "file") return "module";
+  if (type === "directory") return "util";
+  if (type === "function" || type === "class") return "core";
+  return "leaf";
+}
+
+function convertApiNodes(
+  apiNodes: APIGraphNode[],
+): Omit<GraphNode, "x" | "y" | "vx" | "vy">[] {
+  const count = apiNodes.length;
+  // Scale node radii down for large graphs
+  const scale = count > 100 ? 0.5 : count > 50 ? 0.7 : count > 25 ? 0.85 : 1;
+  return apiNodes.map((n) => ({
+    id: n.id,
+    label: n.label,
+    type: mapNodeType(n.type),
+    r:
+      (n.type === "core" || n.type === "class"
+        ? 14
+        : n.type === "module" || n.type === "file"
+          ? 10
+          : 7) * scale,
+    module: n.metadata?.module ?? n.type,
+    imports: n.metadata?.imports,
+    exports: n.metadata?.exports,
+    dependents: n.metadata?.dependents,
+    lines: n.metadata?.lines,
+    risk: n.metadata?.risk,
+  }));
+}
+
+function convertApiEdges(apiEdges: APIGraphEdge[]): GraphEdge[] {
+  return apiEdges.map((e) => ({
+    source: e.source,
+    target: e.target,
+    weight: 0.6,
+  }));
+}
+
+export function Graph() {
+  const { activeRepoId, activeAnalysisId } = useAppStore();
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const nodesRef = useRef<GraphNode[]>([]);
+  const edgesRef = useRef<GraphEdge[]>([]);
+  const animFrameRef = useRef<number>(0);
+  const [size, setSize] = useState({ w: 800, h: 600 });
+  const sizeRef = useRef(size);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [nodeTemplates, setNodeTemplates] = useState<
+    Omit<GraphNode, "x" | "y" | "vx" | "vy">[]
+  >([]);
+  const selectedNodeRef = useRef<string | null>(null);
+  const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const hoveredNodeRef = useRef<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filterType, setFilterType] = useState<string>("all");
+  const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
+  const panRef = useRef({ x: 0, y: 0 });
+  const isDraggingRef = useRef(false);
+  const lastPosRef = useRef({ x: 0, y: 0 });
+  const draggingNodeRef = useRef<string | null>(null);
+  const initialized = useRef(false);
+
+  useEffect(() => {
+    const update = () => {
+      const container = canvasRef.current?.parentElement;
+      if (!container) return;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      setSize({ w, h });
+      sizeRef.current = { w, h };
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  useEffect(() => {
+    if (!activeAnalysisId) {
+      nodesRef.current = [];
+      edgesRef.current = [];
+      setNodeTemplates([]);
+      selectedNodeRef.current = null;
+      hoveredNodeRef.current = null;
+      setSelectedNode(null);
+      setHoveredNode(null);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    nodesRef.current = [];
+    edgesRef.current = [];
+    setNodeTemplates([]);
+    selectedNodeRef.current = null;
+    hoveredNodeRef.current = null;
+    setSelectedNode(null);
+    setHoveredNode(null);
+    setLoading(true);
+    getGraph(activeAnalysisId)
+      .then((data) => {
+        if (cancelled) return;
+        const templates = convertApiNodes(data.nodes);
+        const apiEdges = convertApiEdges(data.edges);
+        setNodeTemplates(templates);
+        edgesRef.current = apiEdges;
+
+        const { w, h } = sizeRef.current;
+        const cx = w / 2;
+        const cy = h / 2;
+        const count = templates.length;
+        // Spread nodes across the full visible area
+        const maxSpread =
+          Math.min(w, h) * 0.4 * Math.max(1, Math.sqrt(count / 20));
+        nodesRef.current = templates.map((nd, i) => {
+          const angle = (i / count) * Math.PI * 2;
+          const baseDist =
+            nd.type === "core"
+              ? 0
+              : nd.type === "module"
+                ? 0.45
+                : nd.type === "util"
+                  ? 0.75
+                  : 1;
+          const dist = baseDist * maxSpread;
+          return {
+            ...nd,
+            x:
+              cx +
+              Math.cos(angle) * dist +
+              (Math.random() - 0.5) * maxSpread * 0.3,
+            y:
+              cy +
+              Math.sin(angle) * dist +
+              (Math.random() - 0.5) * maxSpread * 0.3,
+            vx: 0,
+            vy: 0,
+          };
+        });
+        // Start at 100% zoom centered — simulation will spread nodes out
+        zoomRef.current = 1;
+        setZoom(1);
+        panRef.current = { x: 0, y: 0 };
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAnalysisId]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d")!;
+
+    const getNode = (id: string) => nodesRef.current.find((n) => n.id === id);
+
+    const simulate = () => {
+      const nodes = nodesRef.current;
+      if (nodes.length === 0) return;
+      const { w, h } = sizeRef.current;
+      const cx = w / 2;
+      const cy = h / 2;
+      const count = nodes.length;
+      // Scale repulsion so nodes naturally fill the visible area
+      const repStrength = count > 100 ? 500 : count > 50 ? 300 : 120;
+      const springRest = count > 100 ? 120 : count > 50 ? 90 : 70;
+      // Very gentle center gravity — just keeps things from drifting to infinity
+      const centerPull = 0.0004;
+      // Use spatial grid for O(n) approximate repulsion on large graphs
+      const useGrid = count > 80;
+      const cellSize = 200;
+      const grid = new Map<string, GraphNode[]>();
+
+      if (useGrid) {
+        for (const n of nodes) {
+          const key = `${Math.floor(n.x / cellSize)},${Math.floor(n.y / cellSize)}`;
+          if (!grid.has(key)) grid.set(key, []);
+          grid.get(key)!.push(n);
+        }
+      }
+
+      for (const node of nodes) {
+        if (draggingNodeRef.current === node.id) continue;
+        const dx = cx - node.x;
+        const dy = cy - node.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        // Gentle center gravity — proportional to distance
+        node.vx += dx * centerPull;
+        node.vy += dy * centerPull;
+
+        // Repulsion
+        if (useGrid) {
+          const gx = Math.floor(node.x / cellSize);
+          const gy = Math.floor(node.y / cellSize);
+          for (let gi = gx - 2; gi <= gx + 2; gi++) {
+            for (let gj = gy - 2; gj <= gy + 2; gj++) {
+              const neighbors = grid.get(`${gi},${gj}`);
+              if (!neighbors) continue;
+              for (const other of neighbors) {
+                if (other.id === node.id) continue;
+                const ox = node.x - other.x;
+                const oy = node.y - other.y;
+                const od = Math.max(Math.sqrt(ox * ox + oy * oy), 1);
+                const rep = ((node.r + other.r) * repStrength) / (od * od);
+                node.vx += (ox / od) * rep;
+                node.vy += (oy / od) * rep;
+              }
+            }
+          }
+        } else {
+          for (const other of nodes) {
+            if (other.id === node.id) continue;
+            const ox = node.x - other.x;
+            const oy = node.y - other.y;
+            const od = Math.max(Math.sqrt(ox * ox + oy * oy), 1);
+            const rep = ((node.r + other.r) * repStrength) / (od * od);
+            node.vx += (ox / od) * rep;
+            node.vy += (oy / od) * rep;
+          }
+        }
+
+        for (const edge of edgesRef.current) {
+          const linked =
+            edge.source === node.id
+              ? getNode(edge.target)
+              : edge.target === node.id
+                ? getNode(edge.source)
+                : null;
+          if (!linked) continue;
+          const ex = linked.x - node.x;
+          const ey = linked.y - node.y;
+          const ed = Math.sqrt(ex * ex + ey * ey) || 1;
+          const spring = (ed - springRest) * 0.003 * edge.weight;
+          node.vx += (ex / ed) * spring;
+          node.vy += (ey / ed) * spring;
+        }
+
+        node.vx *= 0.82;
+        node.vy *= 0.82;
+        node.x += node.vx;
+        node.y += node.vy;
+        // No boundary clamping — nodes live in infinite space, user pans/zooms
+      }
+    };
+
+    const draw = () => {
+      const { w, h } = sizeRef.current;
+      ctx.clearRect(0, 0, w, h);
+      ctx.save();
+      ctx.translate(panRef.current.x, panRef.current.y);
+      ctx.scale(zoomRef.current, zoomRef.current);
+
+      const sel = selectedNodeRef.current;
+      const hov = hoveredNodeRef.current;
+      const connectedIds = new Set<string>();
+      if (sel) {
+        edgesRef.current.forEach((e) => {
+          if (e.source === sel) connectedIds.add(e.target);
+          if (e.target === sel) connectedIds.add(e.source);
+        });
+      }
+
+      // Draw edges
+      for (const edge of edgesRef.current) {
+        const s = getNode(edge.source);
+        const t = getNode(edge.target);
+        if (!s || !t) continue;
+        const isConnected = sel
+          ? connectedIds.has(s.id) ||
+            connectedIds.has(t.id) ||
+            s.id === sel ||
+            t.id === sel
+          : true;
+        const isHighlighted = sel && (s.id === sel || t.id === sel);
+        const alpha = sel
+          ? isConnected
+            ? isHighlighted
+              ? 0.55
+              : 0.2
+            : 0.03
+          : edge.weight * 0.15;
+
+        ctx.beginPath();
+        ctx.strokeStyle = isHighlighted
+          ? `rgba(124,108,245,${alpha})`
+          : `rgba(255,255,255,${alpha * 0.6})`;
+        ctx.lineWidth = isHighlighted
+          ? 1.5 / zoomRef.current
+          : 0.8 / zoomRef.current;
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(t.x, t.y);
+        ctx.stroke();
+
+        // Arrow for highlighted
+        if (isHighlighted) {
+          const angle = Math.atan2(t.y - s.y, t.x - s.x);
+          const mx = (s.x + t.x) / 2;
+          const my = (s.y + t.y) / 2;
+          const as = 6 / zoomRef.current;
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(124,108,245,${alpha})`;
+          ctx.moveTo(mx + Math.cos(angle) * as, my + Math.sin(angle) * as);
+          ctx.lineTo(
+            mx + Math.cos(angle + 2.4) * as * 0.6,
+            my + Math.sin(angle + 2.4) * as * 0.6,
+          );
+          ctx.lineTo(
+            mx + Math.cos(angle - 2.4) * as * 0.6,
+            my + Math.sin(angle - 2.4) * as * 0.6,
+          );
+          ctx.fill();
+        }
+      }
+
+      // Draw nodes
+      for (const node of nodesRef.current) {
+        const isSel = node.id === sel;
+        const isHov = node.id === hov;
+        const isDimmed = sel && !isSel && !connectedIds.has(node.id);
+        const color = typeColors[node.type];
+        const alpha = isDimmed ? 0.2 : 1;
+        const r = node.r + (isSel ? 4 : isHov ? 2 : 0);
+
+        // Glow
+        if (isSel || isHov) {
+          const glow = ctx.createRadialGradient(
+            node.x,
+            node.y,
+            r * 0.2,
+            node.x,
+            node.y,
+            r * 3.5,
+          );
+          glow.addColorStop(0, `${color}40`);
+          glow.addColorStop(1, `${color}00`);
+          ctx.beginPath();
+          ctx.fillStyle = glow;
+          ctx.arc(node.x, node.y, r * 3.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Risk indicator ring
+        if (node.risk) {
+          const riskColor = node.risk === "high" ? "#F25353" : "#F5A051";
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, r + 4, 0, Math.PI * 2);
+          ctx.strokeStyle = `${riskColor}${isDimmed ? "30" : "60"}`;
+          ctx.lineWidth = 1.5 / zoomRef.current;
+          ctx.stroke();
+        }
+
+        // Node ring
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r + 2.5, 0, Math.PI * 2);
+        ctx.strokeStyle = `${color}${isSel ? "80" : "25"}`;
+        ctx.lineWidth = 1 / zoomRef.current;
+        ctx.globalAlpha = alpha;
+        ctx.stroke();
+
+        // Fill
+        const grad = ctx.createRadialGradient(
+          node.x - r * 0.25,
+          node.y - r * 0.25,
+          0,
+          node.x,
+          node.y,
+          r,
+        );
+        grad.addColorStop(0, color);
+        grad.addColorStop(1, color + "CC");
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // Label — hide on dense graphs unless hovered/selected
+        const nodeCount = nodesRef.current.length;
+        const labelThreshold = nodeCount > 100 ? 12 : nodeCount > 50 ? 8 : 6;
+        if (!isDimmed && (node.r >= labelThreshold || isHov || isSel)) {
+          ctx.fillStyle =
+            isSel || isHov
+              ? "rgba(240,239,237,0.95)"
+              : "rgba(240,239,237,0.55)";
+          ctx.font = `${isSel ? 500 : 400} ${(isSel ? 11 : 9) / zoomRef.current}px Inter, sans-serif`;
+          ctx.textAlign = "center";
+          ctx.fillText(node.label, node.x, node.y + r + 14 / zoomRef.current);
+        }
+      }
+
+      ctx.restore();
+    };
+
+    let frameCount = 0;
+    let didAutoFit = false;
+
+    const autoFit = () => {
+      const nodes = nodesRef.current;
+      if (nodes.length === 0) return;
+      const { w, h } = sizeRef.current;
+      let minX = Infinity,
+        maxX = -Infinity,
+        minY = Infinity,
+        maxY = -Infinity;
+      for (const n of nodes) {
+        minX = Math.min(minX, n.x - n.r);
+        maxX = Math.max(maxX, n.x + n.r);
+        minY = Math.min(minY, n.y - n.r);
+        maxY = Math.max(maxY, n.y + n.r);
+      }
+      const graphW = maxX - minX + 80;
+      const graphH = maxY - minY + 80;
+      const fitZoom = Math.min(w / graphW, h / graphH, 1.2);
+      const graphCx = (minX + maxX) / 2;
+      const graphCy = (minY + maxY) / 2;
+      zoomRef.current = fitZoom;
+      setZoom(fitZoom);
+      panRef.current = {
+        x: w / 2 - graphCx * fitZoom,
+        y: h / 2 - graphCy * fitZoom,
+      };
+    };
+
+    const loop = () => {
+      simulate();
+      draw();
+      frameCount++;
+      // Auto-fit once after simulation settles
+      if (!didAutoFit && frameCount === 90) {
+        didAutoFit = true;
+        autoFit();
+      }
+      animFrameRef.current = requestAnimationFrame(loop);
+    };
+    loop();
+
+    return () => cancelAnimationFrame(animFrameRef.current);
+  }, [size, loading]);
+
+  // Mouse events
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const toWorld = (cx: number, cy: number) => ({
+      x: (cx - panRef.current.x) / zoomRef.current,
+      y: (cy - panRef.current.y) / zoomRef.current,
+    });
+
+    const hitTest = (mx: number, my: number) => {
+      const w = toWorld(mx, my);
+      for (const node of nodesRef.current) {
+        const d = Math.sqrt((w.x - node.x) ** 2 + (w.y - node.y) ** 2);
+        if (d < node.r + 6) return node.id;
+      }
+      return null;
+    };
+
+    const onMove = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      if (draggingNodeRef.current) {
+        const w = toWorld(mx, my);
+        const node = nodesRef.current.find(
+          (n) => n.id === draggingNodeRef.current,
+        );
+        if (node) {
+          node.x = w.x;
+          node.y = w.y;
+          node.vx = 0;
+          node.vy = 0;
+        }
+        return;
+      }
+
+      if (isDraggingRef.current) {
+        panRef.current.x += mx - lastPosRef.current.x;
+        panRef.current.y += my - lastPosRef.current.y;
+        lastPosRef.current = { x: mx, y: my };
+        return;
+      }
+
+      const hit = hitTest(mx, my);
+      hoveredNodeRef.current = hit;
+      setHoveredNode(hit);
+      canvas.style.cursor = hit ? "pointer" : "grab";
+    };
+
+    const onDown = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const hit = hitTest(mx, my);
+      if (hit) {
+        draggingNodeRef.current = hit;
+        canvas.style.cursor = "grabbing";
+      } else {
+        isDraggingRef.current = true;
+        lastPosRef.current = { x: mx, y: my };
+        canvas.style.cursor = "grabbing";
+      }
+    };
+
+    const onUp = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      if (draggingNodeRef.current) {
+        const hit = hitTest(mx, my);
+        if (hit === draggingNodeRef.current) {
+          selectedNodeRef.current =
+            hit === selectedNodeRef.current ? null : hit;
+          setSelectedNode(selectedNodeRef.current);
+        }
+        draggingNodeRef.current = null;
+      }
+      isDraggingRef.current = false;
+      canvas.style.cursor = "grab";
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      const newZoom = Math.max(0.3, Math.min(3, zoomRef.current * factor));
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      panRef.current.x =
+        mx - (mx - panRef.current.x) * (newZoom / zoomRef.current);
+      panRef.current.y =
+        my - (my - panRef.current.y) * (newZoom / zoomRef.current);
+      zoomRef.current = newZoom;
+      setZoom(newZoom);
+    };
+
+    canvas.addEventListener("mousemove", onMove);
+    canvas.addEventListener("mousedown", onDown);
+    canvas.addEventListener("mouseup", onUp);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener("mousemove", onMove);
+      canvas.removeEventListener("mousedown", onDown);
+      canvas.removeEventListener("mouseup", onUp);
+      canvas.removeEventListener("wheel", onWheel);
+    };
+  }, [loading]);
+
+  const selectedNodeData = selectedNode
+    ? nodeTemplates.find((n) => n.id === selectedNode)
+    : null;
+
+  if (loading) {
+    return (
+      <div
+        className="flex h-full items-center justify-center"
+        style={{ background: "var(--rs-base)" }}
+      >
+        <Loader2
+          size={24}
+          style={{
+            color: "var(--rs-accent)",
+            animation: "spin 1s linear infinite",
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (!activeAnalysisId) {
+    return (
+      <div
+        className="flex h-full items-center justify-center"
+        style={{ background: "var(--rs-base)" }}
+      >
+        <p style={{ fontSize: 14, color: "var(--rs-text-muted)" }}>
+          Run an analysis to view the dependency graph
+        </p>
+      </div>
+    );
+  }
+
+  if (!loading && nodesRef.current.length === 0) {
+    return (
+      <div
+        className="flex h-full items-center justify-center flex-col gap-3"
+        style={{ background: "var(--rs-base)" }}
+      >
+        <GitBranch
+          size={40}
+          style={{ color: "var(--rs-text-muted)", opacity: 0.5 }}
+        />
+        <p style={{ fontSize: 14, color: "var(--rs-text-muted)" }}>
+          No dependency graph data available for this repository
+        </p>
+        <p
+          style={{ fontSize: 12, color: "var(--rs-text-muted)", opacity: 0.6 }}
+        >
+          Try selecting a different repository or re-running the analysis
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full" style={{ background: "var(--rs-base)" }}>
+      {/* Graph canvas area */}
+      <div
+        className="flex-1 relative overflow-hidden"
+        style={{ cursor: "grab" }}
+      >
+        <canvas
+          ref={canvasRef}
+          width={size.w}
+          height={size.h}
+          className="absolute inset-0"
+        />
+
+        {/* Toolbar */}
+        <div
+          className="absolute top-4 left-4 flex flex-col gap-2"
+          style={{ zIndex: 10 }}
+        >
+          {/* Search */}
+          <div
+            className="flex items-center gap-2 rounded-xl px-3"
+            style={{
+              height: 36,
+              background: "rgba(18,18,24,0.9)",
+              border: "1px solid var(--rs-border-strong)",
+              backdropFilter: "blur(12px)",
+              width: 220,
+            }}
+          >
+            <Search size={12} style={{ color: "var(--rs-text-muted)" }} />
+            <input
+              placeholder="Find module or file…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{
+                background: "transparent",
+                border: "none",
+                outline: "none",
+                fontSize: 12,
+                color: "var(--rs-text-primary)",
+                flex: 1,
+              }}
+            />
+          </div>
+
+          {/* Filter pills */}
+          <div
+            className="flex flex-wrap gap-1.5 rounded-xl p-2"
+            style={{
+              background: "rgba(18,18,24,0.9)",
+              border: "1px solid var(--rs-border-strong)",
+              backdropFilter: "blur(12px)",
+              width: 220,
+            }}
+          >
+            {[
+              { key: "all", label: "All" },
+              { key: "core", label: "Core", color: "#7C6CF5" },
+              { key: "module", label: "Module", color: "#5B9CF6" },
+              { key: "util", label: "Util", color: "#3DD68C" },
+              { key: "leaf", label: "Leaf", color: "#8A8AA0" },
+            ].map((f) => (
+              <button
+                key={f.key}
+                onClick={() => setFilterType(f.key)}
+                className="flex items-center gap-1.5 rounded-md px-2 py-1 transition-all"
+                style={{
+                  fontSize: 10,
+                  fontWeight: 500,
+                  background:
+                    filterType === f.key
+                      ? "rgba(124,108,245,0.2)"
+                      : "transparent",
+                  color:
+                    filterType === f.key
+                      ? "var(--rs-text-primary)"
+                      : "var(--rs-text-muted)",
+                  border:
+                    filterType === f.key
+                      ? "1px solid rgba(124,108,245,0.3)"
+                      : "1px solid transparent",
+                }}
+              >
+                {f.color && (
+                  <span
+                    className="rounded-full"
+                    style={{ width: 5, height: 5, background: f.color }}
+                  />
+                )}
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Zoom controls */}
+        <div
+          className="absolute bottom-4 left-4 flex flex-col gap-1 rounded-xl overflow-hidden"
+          style={{
+            background: "rgba(18,18,24,0.9)",
+            border: "1px solid var(--rs-border-strong)",
+            backdropFilter: "blur(12px)",
+            zIndex: 10,
+          }}
+        >
+          {[
+            {
+              icon: ZoomIn,
+              action: () => {
+                zoomRef.current = Math.min(3, zoomRef.current * 1.2);
+                setZoom(zoomRef.current);
+              },
+            },
+            {
+              icon: ZoomOut,
+              action: () => {
+                zoomRef.current = Math.max(0.3, zoomRef.current / 1.2);
+                setZoom(zoomRef.current);
+              },
+            },
+            {
+              icon: Maximize2,
+              action: () => {
+                const nodes = nodesRef.current;
+                if (nodes.length === 0) return;
+                const { w, h } = sizeRef.current;
+                let minX = Infinity,
+                  maxX = -Infinity,
+                  minY = Infinity,
+                  maxY = -Infinity;
+                for (const n of nodes) {
+                  minX = Math.min(minX, n.x - n.r);
+                  maxX = Math.max(maxX, n.x + n.r);
+                  minY = Math.min(minY, n.y - n.r);
+                  maxY = Math.max(maxY, n.y + n.r);
+                }
+                const graphW = maxX - minX + 80;
+                const graphH = maxY - minY + 80;
+                const fitZoom = Math.min(w / graphW, h / graphH, 1.2);
+                const graphCx = (minX + maxX) / 2;
+                const graphCy = (minY + maxY) / 2;
+                zoomRef.current = fitZoom;
+                panRef.current = {
+                  x: w / 2 - graphCx * fitZoom,
+                  y: h / 2 - graphCy * fitZoom,
+                };
+                setZoom(fitZoom);
+              },
+            },
+          ].map(({ icon: Icon, action }, i) => (
+            <button
+              key={i}
+              onClick={action}
+              className="flex items-center justify-center transition-colors"
+              style={{
+                width: 34,
+                height: 34,
+                color: "var(--rs-text-secondary)",
+                background: "transparent",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                e.currentTarget.style.color = "var(--rs-text-primary)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.color = "var(--rs-text-secondary)";
+              }}
+            >
+              <Icon size={13} />
+            </button>
+          ))}
+        </div>
+
+        {/* Zoom indicator */}
+        <div
+          className="absolute bottom-4 left-14"
+          style={{
+            fontSize: 10,
+            color: "var(--rs-text-muted)",
+            background: "rgba(18,18,24,0.8)",
+            border: "1px solid var(--rs-border)",
+            borderRadius: 6,
+            padding: "4px 8px",
+            zIndex: 10,
+          }}
+        >
+          {Math.round(zoom * 100)}%
+        </div>
+
+        {/* Legend */}
+        <div
+          className="absolute bottom-4 right-4 rounded-xl p-3"
+          style={{
+            background: "rgba(18,18,24,0.9)",
+            border: "1px solid var(--rs-border-strong)",
+            backdropFilter: "blur(12px)",
+            zIndex: 10,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 9,
+              fontWeight: 600,
+              color: "var(--rs-text-muted)",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              marginBottom: 8,
+            }}
+          >
+            Legend
+          </div>
+          <div className="flex flex-col gap-2">
+            {[
+              { color: "#7C6CF5", label: "Core module" },
+              { color: "#5B9CF6", label: "Module" },
+              { color: "#3DD68C", label: "Utility" },
+              { color: "#8A8AA0", label: "Leaf" },
+            ].map((item) => (
+              <div key={item.label} className="flex items-center gap-2">
+                <div
+                  className="rounded-full"
+                  style={{ width: 7, height: 7, background: item.color }}
+                />
+                <span style={{ fontSize: 10, color: "var(--rs-text-muted)" }}>
+                  {item.label}
+                </span>
+              </div>
+            ))}
+            <div
+              style={{
+                borderTop: "1px solid var(--rs-border)",
+                margin: "4px 0",
+              }}
+            />
+            <div className="flex items-center gap-2">
+              <div
+                className="rounded-full"
+                style={{ width: 7, height: 7, border: "1.5px solid #F25353" }}
+              />
+              <span style={{ fontSize: 10, color: "var(--rs-text-muted)" }}>
+                High risk
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div
+                className="rounded-full"
+                style={{ width: 7, height: 7, border: "1.5px solid #F5A051" }}
+              />
+              <span style={{ fontSize: 10, color: "var(--rs-text-muted)" }}>
+                Medium risk
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Click hint */}
+        {!selectedNode && (
+          <div
+            className="absolute top-4 right-4 rounded-xl px-3 py-2"
+            style={{
+              background: "rgba(18,18,24,0.85)",
+              border: "1px solid var(--rs-border)",
+              backdropFilter: "blur(12px)",
+              zIndex: 10,
+            }}
+          >
+            <p style={{ fontSize: 11, color: "var(--rs-text-muted)" }}>
+              Click a node to inspect · Drag to pan · Scroll to zoom
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Node detail panel */}
+      <AnimatePresence>
+        {selectedNode && selectedNodeData && (
+          <motion.div
+            initial={{ opacity: 0, x: 20, width: 0 }}
+            animate={{ opacity: 1, x: 0, width: 300 }}
+            exit={{ opacity: 0, x: 20, width: 0 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="shrink-0 overflow-hidden flex flex-col"
+            style={{
+              borderLeft: "1px solid var(--rs-border)",
+              background: "var(--rs-sidebar)",
+              height: "100%",
+              overflow: "hidden",
+            }}
+          >
+            <div className="flex-1 overflow-y-auto" style={{ minWidth: 300 }}>
+              {/* Header */}
+              <div
+                className="flex items-start justify-between p-5"
+                style={{ borderBottom: "1px solid var(--rs-border)" }}
+              >
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div
+                      className="rounded-full"
+                      style={{
+                        width: 8,
+                        height: 8,
+                        background: typeColors[selectedNodeData.type],
+                      }}
+                    />
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: typeColors[selectedNodeData.type],
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {selectedNodeData.type}
+                    </span>
+                    {selectedNodeData.risk && (
+                      <span
+                        className="rounded-full px-1.5 py-0.5"
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 600,
+                          background:
+                            selectedNodeData.risk === "high"
+                              ? "var(--rs-red-dim)"
+                              : "var(--rs-amber-dim)",
+                          color:
+                            selectedNodeData.risk === "high"
+                              ? "var(--rs-red)"
+                              : "var(--rs-amber)",
+                        }}
+                      >
+                        {selectedNodeData.risk} risk
+                      </span>
+                    )}
+                  </div>
+                  <h2
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: "var(--rs-text-primary)",
+                      fontFamily: "monospace",
+                      letterSpacing: "-0.01em",
+                    }}
+                  >
+                    {selectedNodeData.label}
+                  </h2>
+                  <p
+                    style={{
+                      fontSize: 11,
+                      color: "var(--rs-text-muted)",
+                      marginTop: 3,
+                    }}
+                  >
+                    {selectedNodeData.module} module · {selectedNodeData.lines}{" "}
+                    lines
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    selectedNodeRef.current = null;
+                    setSelectedNode(null);
+                  }}
+                  className="rounded-lg p-1.5 transition-colors"
+                  style={{
+                    color: "var(--rs-text-muted)",
+                    background: "transparent",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                    e.currentTarget.style.color = "var(--rs-text-primary)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.color = "var(--rs-text-muted)";
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+
+              <div className="p-5 flex flex-col gap-5">
+                {/* Stats */}
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    {
+                      label: "Imports",
+                      value: selectedNodeData.imports?.length ?? 0,
+                    },
+                    {
+                      label: "Exports",
+                      value: selectedNodeData.exports?.length ?? 0,
+                    },
+                    {
+                      label: "Dependents",
+                      value: selectedNodeData.dependents?.length ?? 0,
+                    },
+                  ].map((s) => (
+                    <div
+                      key={s.label}
+                      className="rounded-lg p-2.5 text-center"
+                      style={{
+                        background: "var(--rs-surface-2)",
+                        border: "1px solid var(--rs-border)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 16,
+                          fontWeight: 600,
+                          color: "var(--rs-text-primary)",
+                          letterSpacing: "-0.02em",
+                        }}
+                      >
+                        {s.value}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 9,
+                          color: "var(--rs-text-muted)",
+                          marginTop: 2,
+                          fontWeight: 500,
+                        }}
+                      >
+                        {s.label}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Connections */}
+                {[
+                  {
+                    title: "Incoming",
+                    items: selectedNodeData.dependents ?? [],
+                    color: "var(--rs-green)",
+                    desc: "depends on this",
+                  },
+                  {
+                    title: "Outgoing",
+                    items: selectedNodeData.imports ?? [],
+                    color: "var(--rs-blue)",
+                    desc: "this depends on",
+                  },
+                ].map(
+                  (section) =>
+                    section.items.length > 0 && (
+                      <div key={section.title}>
+                        <div className="flex items-center gap-2 mb-2.5">
+                          <div
+                            className="rounded-full"
+                            style={{
+                              width: 5,
+                              height: 5,
+                              background: section.color,
+                            }}
+                          />
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "var(--rs-text-muted)",
+                              letterSpacing: "0.04em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            {section.title}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              color: "var(--rs-text-muted)",
+                            }}
+                          >
+                            — {section.desc}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          {section.items.map((item: string) => (
+                            <button
+                              key={item}
+                              onClick={() => {
+                                const node = nodesRef.current.find(
+                                  (n) =>
+                                    n.label === item ||
+                                    n.id ===
+                                      item
+                                        .replace("src/", "")
+                                        .replace(".ts", "")
+                                        .split("/")
+                                        .pop(),
+                                );
+                                if (node) {
+                                  selectedNodeRef.current = node.id;
+                                  setSelectedNode(node.id);
+                                }
+                              }}
+                              className="flex items-center gap-2 rounded-lg px-3 py-2 w-full text-left transition-colors"
+                              style={{
+                                background: "var(--rs-surface-2)",
+                                border: "1px solid var(--rs-border)",
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.borderColor =
+                                  "rgba(124,108,245,0.25)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.borderColor =
+                                  "var(--rs-border)";
+                              }}
+                            >
+                              <FileCode
+                                size={10}
+                                style={{ color: section.color, flexShrink: 0 }}
+                              />
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  color: "var(--rs-text-secondary)",
+                                  fontFamily: "monospace",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {item}
+                              </span>
+                              <ArrowRight
+                                size={9}
+                                className="ml-auto shrink-0"
+                                style={{ color: "var(--rs-text-muted)" }}
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ),
+                )}
+
+                {/* Actions */}
+                <div
+                  className="flex flex-col gap-2 pt-2"
+                  style={{ borderTop: "1px solid var(--rs-border)" }}
+                >
+                  <button
+                    className="flex items-center gap-2 rounded-lg px-3 py-2.5 w-full transition-all"
+                    style={{
+                      background: "rgba(124,108,245,0.1)",
+                      border: "1px solid rgba(124,108,245,0.2)",
+                      color: "var(--rs-accent)",
+                    }}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.background =
+                        "rgba(124,108,245,0.18)")
+                    }
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.background =
+                        "rgba(124,108,245,0.1)")
+                    }
+                  >
+                    <Sparkles size={11} />
+                    <span style={{ fontSize: 12, fontWeight: 500 }}>
+                      Ask AI about this file
+                    </span>
+                  </button>
+                  <button
+                    className="flex items-center gap-2 rounded-lg px-3 py-2.5 w-full transition-all"
+                    style={{
+                      background: "var(--rs-surface-2)",
+                      border: "1px solid var(--rs-border)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor =
+                        "var(--rs-border-strong)";
+                      e.currentTarget.style.color = "var(--rs-text-primary)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = "var(--rs-border)";
+                      e.currentTarget.style.color = "var(--rs-text-secondary)";
+                    }}
+                  >
+                    <FileCode size={11} />
+                    <span style={{ fontSize: 12, fontWeight: 500 }}>
+                      Open in Files
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

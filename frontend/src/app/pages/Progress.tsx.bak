@@ -1,0 +1,277 @@
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router";
+import { motion } from "motion/react";
+import { Loader2, CheckCircle, AlertCircle, Lock } from "lucide-react";
+import { useAppStore } from "@/lib/store";
+import {
+  listAnalyses,
+  getAnalysisProgress,
+  retryAnalysis,
+  type AnalysisProgress as AnalysisProgressType,
+} from "@/lib/api";
+
+const STEP_LABELS: Record<string, string> = {
+  CLONING: "Cloning repository…",
+  SCANNING: "Scanning files…",
+  PARSING: "Parsing symbols…",
+  BUILDING_GRAPH: "Building dependency graph…",
+  COMPUTING_INSIGHTS: "Computing insights…",
+  GENERATING_DOCS: "Generating documentation…",
+  INDEXING: "Indexing for search…",
+};
+
+export function Progress() {
+  const navigate = useNavigate();
+  const { activeRepoId, setActiveAnalysis } = useAppStore();
+  const [progress, setProgress] = useState<AnalysisProgressType | null>(null);
+  const [analysisId, setAnalysisId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState("");
+  const [retrying, setRetrying] = useState(false);
+
+  // Find the latest analysis for the active repo
+  useEffect(() => {
+    if (!activeRepoId) {
+      navigate("/app/upload");
+      return;
+    }
+    const findAnalysis = async () => {
+      try {
+        const analyses = await listAnalyses(activeRepoId);
+        if (analyses.length > 0) {
+          // listAnalyses returns newest first (created_at desc)
+          const latest = analyses[0];
+          setAnalysisId(latest.id);
+          setActiveAnalysis(latest.id);
+        }
+      } catch {
+        setError("Could not find analysis");
+      }
+    };
+    findAnalysis();
+  }, [activeRepoId]);
+
+  // Poll for progress
+  useEffect(() => {
+    if (!analysisId) return;
+    let timer: ReturnType<typeof setInterval>;
+
+    const poll = async () => {
+      try {
+        const p = await getAnalysisProgress(analysisId);
+        setProgress(p);
+        if (p.status?.toLowerCase() === "completed") {
+          clearInterval(timer);
+          setTimeout(() => navigate("/app"), 1200);
+        } else if (p.status?.toLowerCase() === "failed") {
+          clearInterval(timer);
+          setError(p.error_message || "Analysis failed");
+        }
+      } catch {
+        // ignore transient polling errors
+      }
+    };
+
+    poll();
+    timer = setInterval(poll, 2000);
+    return () => clearInterval(timer);
+  }, [analysisId]);
+
+  const pct = progress?.progress ?? 0;
+  const stepLabel = progress?.current_step
+    ? (STEP_LABELS[progress.current_step] ?? progress.current_step)
+    : "Starting analysis…";
+  const isDone = progress?.status?.toLowerCase() === "completed";
+  const isFailed = progress?.status?.toLowerCase() === "failed";
+  const isAuthError =
+    isFailed &&
+    /private|authentication|access token|401|403/i.test(error ?? "");
+
+  const handleRetry = async () => {
+    if (!analysisId) return;
+    setRetrying(true);
+    try {
+      await retryAnalysis(
+        analysisId,
+        isAuthError && retryToken.trim() ? retryToken.trim() : undefined,
+      );
+      setError(null);
+      setProgress({
+        status: "pending",
+        current_step: null,
+        progress: 0,
+        error_message: null,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Retry failed");
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <div
+      className="h-full flex items-center justify-center"
+      style={{ background: "var(--rs-base)" }}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-md px-6 text-center"
+      >
+        {/* Icon */}
+        <div
+          className="mx-auto rounded-2xl flex items-center justify-center mb-6"
+          style={{
+            width: 64,
+            height: 64,
+            background: isDone
+              ? "var(--rs-green-dim)"
+              : isFailed
+                ? "var(--rs-red-dim)"
+                : "rgba(124,108,245,0.1)",
+            border: `1px solid ${isDone ? "rgba(61,214,140,0.2)" : isFailed ? "rgba(242,83,83,0.2)" : "rgba(124,108,245,0.2)"}`,
+          }}
+        >
+          {isDone ? (
+            <CheckCircle size={26} style={{ color: "var(--rs-green)" }} />
+          ) : isFailed ? (
+            <AlertCircle size={26} style={{ color: "var(--rs-red)" }} />
+          ) : (
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+            >
+              <Loader2 size={26} style={{ color: "var(--rs-accent)" }} />
+            </motion.div>
+          )}
+        </div>
+
+        <h1
+          style={{
+            fontSize: 20,
+            fontWeight: 600,
+            letterSpacing: "-0.025em",
+            color: "var(--rs-text-primary)",
+            marginBottom: 6,
+          }}
+        >
+          {isDone
+            ? "Analysis Complete"
+            : isFailed
+              ? "Analysis Failed"
+              : "Analyzing Repository"}
+        </h1>
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--rs-text-muted)",
+            marginBottom: 24,
+          }}
+        >
+          {isDone
+            ? "Redirecting to dashboard…"
+            : isFailed
+              ? error || "Something went wrong"
+              : stepLabel}
+        </p>
+
+        {/* Progress bar */}
+        {!isFailed && (
+          <div className="relative">
+            <div
+              className="rounded-full overflow-hidden"
+              style={{ height: 6, background: "var(--rs-surface-2)" }}
+            >
+              <motion.div
+                className="h-full rounded-full"
+                style={{
+                  background: isDone ? "var(--rs-green)" : "var(--rs-accent)",
+                }}
+                animate={{ width: `${pct}%` }}
+                transition={{ duration: 0.5, ease: "easeOut" }}
+              />
+            </div>
+            <div className="flex items-center justify-between mt-2">
+              <span style={{ fontSize: 11, color: "var(--rs-text-muted)" }}>
+                {Math.round(pct)}%
+              </span>
+            </div>
+          </div>
+        )}
+
+        {isFailed && (
+          <div className="mt-6 flex flex-col gap-3 items-stretch">
+            {isAuthError && (
+              <div
+                className="rounded-xl overflow-hidden flex items-center gap-2"
+                style={{
+                  background: "var(--rs-surface-1)",
+                  border: "1px solid var(--rs-border)",
+                  padding: "2px 10px",
+                }}
+              >
+                <Lock size={13} style={{ color: "var(--rs-text-muted)" }} />
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={retryToken}
+                  onChange={(e) => setRetryToken(e.target.value)}
+                  placeholder="GitHub access token"
+                  style={{
+                    flex: 1,
+                    background: "transparent",
+                    border: "none",
+                    outline: "none",
+                    padding: "10px 6px",
+                    fontSize: 12,
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, monospace",
+                    color: "var(--rs-text-primary)",
+                  }}
+                />
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={handleRetry}
+                disabled={retrying || (isAuthError && !retryToken.trim())}
+                className="flex-1 rounded-xl px-4 py-2.5 transition-all"
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  background:
+                    isAuthError && !retryToken.trim()
+                      ? "var(--rs-surface-2)"
+                      : "var(--rs-accent)",
+                  color:
+                    isAuthError && !retryToken.trim()
+                      ? "var(--rs-text-muted)"
+                      : "white",
+                  border: "none",
+                  opacity: retrying ? 0.7 : 1,
+                }}
+              >
+                {retrying ? "Retrying…" : "Retry analysis"}
+              </button>
+              <button
+                onClick={() => navigate("/app/upload")}
+                className="rounded-xl px-4 py-2.5 transition-all"
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  background: "var(--rs-surface-2)",
+                  color: "var(--rs-text-primary)",
+                  border: "1px solid var(--rs-border)",
+                }}
+              >
+                New repo
+              </button>
+            </div>
+          </div>
+        )}
+      </motion.div>
+    </div>
+  );
+}

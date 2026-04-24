@@ -33,6 +33,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: dev
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -53,11 +54,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'python -c ''import urllib.request; urllib.request.urlopen("http://localhost:8000/health", timeout=3)'' || exit 1',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   celery-worker:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: dev
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
     restart: unless-stopped
     env_file:
@@ -90,7 +102,14 @@ services:
     volumes:
       - ./frontend/src:/app/src
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   pgdata:

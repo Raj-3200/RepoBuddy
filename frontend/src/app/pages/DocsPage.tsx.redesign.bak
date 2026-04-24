@@ -1,0 +1,1071 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import {
+  ArrowRight,
+  BookOpen,
+  Compass,
+  FileCode,
+  GitBranch,
+  Loader2,
+  Target,
+  Zap,
+} from "lucide-react";
+import { useAppStore } from "@/lib/store";
+import { getDocumentation, type DocumentationResponse } from "@/lib/api";
+import {
+  Callout,
+  Card,
+  CardHeader,
+  DotSep,
+  EmptyState,
+  Eyebrow,
+  FadeIn,
+  MetaText,
+  MetricBar,
+  Mono,
+  PageHero,
+  PageShell,
+  Path,
+  Section,
+  SectionNav,
+  Skeleton,
+  StatStrip,
+  SubSection,
+  Tag,
+} from "../ds";
+
+const NAV_ITEMS = [
+  { id: "snapshot", label: "Snapshot" },
+  { id: "getting-started", label: "Getting started" },
+  { id: "architecture", label: "Architecture" },
+  { id: "modules", label: "Key modules" },
+  { id: "entry-points", label: "Entry points" },
+  { id: "central", label: "Most imported" },
+  { id: "risks", label: "Risk areas" },
+  { id: "cycles", label: "Cycles" },
+  { id: "reading-path", label: "Reading path" },
+];
+
+// ── lightweight markdown renderer ──────────────────────────────────────────
+
+function inline(s: string): string {
+  const esc = s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return esc
+    .replace(
+      /`([^`]+)`/g,
+      `<code style="font-family:var(--rs-font-mono);font-size:11.5px;background:var(--rs-surface-2);color:var(--rs-text-primary);border:1px solid var(--rs-hairline);border-radius:4px;padding:1px 5px;">$1</code>`,
+    )
+    .replace(
+      /\*\*([^*]+)\*\*/g,
+      `<strong style="color:var(--rs-text-primary);font-weight:500;">$1</strong>`,
+    )
+    .replace(
+      /\*([^*]+)\*/g,
+      `<em style="color:var(--rs-text-primary);">$1</em>`,
+    );
+}
+
+// Strip sections whose content is already rendered in dedicated page sections,
+// plus the doc's top-level H1 (which duplicates the page section header).
+// Also drops markdown pipe-tables, which the LLM emits as redundant summaries
+// of the structured data we already show.
+function cleanDocSource(source: string, stripHeadings: string[]): string {
+  const norm = (s: string) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/[:：].*$/, "")
+      .trim();
+  const skip = new Set(stripHeadings.map(norm));
+  const lines = source.split("\n");
+  const out: string[] = [];
+  let skipping = false;
+  let skipLevel = 0;
+
+  for (const raw of lines) {
+    const h = raw.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      const level = h[1].length;
+      // Drop top-level H1 (duplicates section header)
+      if (level === 1) continue;
+      if (skipping && level > skipLevel) continue;
+      if (skip.has(norm(h[2]))) {
+        skipping = true;
+        skipLevel = level;
+        continue;
+      }
+      skipping = false;
+    }
+    if (skipping) continue;
+    // Drop pipe-style markdown tables entirely — they're always duplicates of
+    // our structured sections and render poorly as plain text.
+    if (/^\s*\|.*\|\s*$/.test(raw)) continue;
+    out.push(raw);
+  }
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+type Block =
+  | { kind: "h"; text: string; level: number }
+  | { kind: "p"; text: string }
+  | { kind: "ul"; items: string[] }
+  | { kind: "ol"; items: string[] }
+  | { kind: "code"; text: string; lang?: string };
+
+function parseBlocks(source: string): Block[] {
+  const lines = source.split("\n");
+  const out: Block[] = [];
+  let buffer: string[] = [];
+  let ulItems: string[] | null = null;
+  let olItems: string[] | null = null;
+  let codeBuffer: string[] | null = null;
+  let codeLang: string | undefined;
+
+  const flushParagraph = () => {
+    if (buffer.length) {
+      out.push({ kind: "p", text: buffer.join(" ") });
+      buffer = [];
+    }
+  };
+  const flushLists = () => {
+    if (ulItems) {
+      out.push({ kind: "ul", items: ulItems });
+      ulItems = null;
+    }
+    if (olItems) {
+      out.push({ kind: "ol", items: olItems });
+      olItems = null;
+    }
+  };
+  const flushAll = () => {
+    flushParagraph();
+    flushLists();
+  };
+
+  for (const raw of lines) {
+    // Fenced code blocks: ```lang
+    const fence = raw.match(/^```\s*(\S*)\s*$/);
+    if (fence) {
+      if (codeBuffer !== null) {
+        out.push({ kind: "code", text: codeBuffer.join("\n"), lang: codeLang });
+        codeBuffer = null;
+        codeLang = undefined;
+      } else {
+        flushAll();
+        codeBuffer = [];
+        codeLang = fence[1] || undefined;
+      }
+      continue;
+    }
+    if (codeBuffer !== null) {
+      codeBuffer.push(raw);
+      continue;
+    }
+
+    const line = raw.trim();
+    if (!line) {
+      flushAll();
+      continue;
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/);
+    if (h) {
+      flushAll();
+      out.push({ kind: "h", text: h[2], level: h[1].length });
+      continue;
+    }
+    const num = line.match(/^(\d+)\.\s+(.*)$/);
+    if (num) {
+      flushParagraph();
+      if (ulItems) {
+        out.push({ kind: "ul", items: ulItems });
+        ulItems = null;
+      }
+      olItems = olItems ?? [];
+      olItems.push(num[2]);
+      continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      flushParagraph();
+      if (olItems) {
+        out.push({ kind: "ol", items: olItems });
+        olItems = null;
+      }
+      ulItems = ulItems ?? [];
+      ulItems.push(line.replace(/^[-*]\s+/, ""));
+      continue;
+    }
+    // indented continuation of a list item
+    if ((ulItems || olItems) && /^\s+/.test(raw)) {
+      const bucket = ulItems ?? olItems!;
+      bucket[bucket.length - 1] += " " + line;
+      continue;
+    }
+    flushLists();
+    buffer.push(line);
+  }
+  if (codeBuffer !== null) {
+    out.push({ kind: "code", text: codeBuffer.join("\n"), lang: codeLang });
+  }
+  flushAll();
+  return out;
+}
+
+function Prose({ source }: { source: string }) {
+  const blocks = useMemo(() => parseBlocks(source), [source]);
+
+  const headingStyle = (level: number, first: boolean) => {
+    const size =
+      level === 1
+        ? "var(--rs-text-title)"
+        : level === 2
+          ? "var(--rs-text-heading)"
+          : "var(--rs-text-body)";
+    return {
+      fontSize: size,
+      fontWeight: 500,
+      color: "var(--rs-text-primary)",
+      letterSpacing: "var(--rs-tracking-snug)",
+      lineHeight: "var(--rs-leading-tight)",
+      margin: 0,
+      paddingTop: first ? 0 : level <= 2 ? 18 : 12,
+      paddingBottom: 4,
+      borderTop:
+        !first && level <= 2 ? "1px solid var(--rs-hairline)" : undefined,
+    } as const;
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {blocks.map((b, i) => {
+        if (b.kind === "h") {
+          const Tag = `h${Math.min(Math.max(b.level + 1, 2), 6)}` as unknown as
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6";
+          return (
+            <Tag
+              key={i}
+              style={headingStyle(b.level, i === 0)}
+              dangerouslySetInnerHTML={{ __html: inline(b.text) }}
+            />
+          );
+        }
+        if (b.kind === "code") {
+          return (
+            <pre
+              key={i}
+              style={{
+                margin: 0,
+                padding: "12px 14px",
+                background: "var(--rs-surface-0)",
+                border: "1px solid var(--rs-hairline)",
+                borderRadius: "var(--rs-radius-md)",
+                overflowX: "auto",
+                fontFamily: "var(--rs-font-mono)",
+                fontSize: "var(--rs-text-meta)",
+                lineHeight: 1.6,
+                color: "var(--rs-text-secondary)",
+              }}
+            >
+              <code>{b.text}</code>
+            </pre>
+          );
+        }
+        if (b.kind === "ul") {
+          return (
+            <ul
+              key={i}
+              style={{
+                margin: 0,
+                padding: 0,
+                listStyle: "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              {b.items.map((item, j) => (
+                <li key={j} style={{ display: "flex", gap: 10 }}>
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 4,
+                      height: 4,
+                      borderRadius: 2,
+                      background: "var(--rs-text-muted)",
+                      marginTop: 9,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span
+                    style={{
+                      flex: 1,
+                      fontSize: "var(--rs-text-body)",
+                      lineHeight: "var(--rs-leading-relaxed)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                    dangerouslySetInnerHTML={{ __html: inline(item) }}
+                  />
+                </li>
+              ))}
+            </ul>
+          );
+        }
+        if (b.kind === "ol") {
+          return (
+            <ol
+              key={i}
+              style={{
+                margin: 0,
+                padding: 0,
+                listStyle: "none",
+                counterReset: "prose-step",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              {b.items.map((item, j) => (
+                <li
+                  key={j}
+                  style={{ display: "flex", gap: 10, alignItems: "flex-start" }}
+                >
+                  <span
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 10,
+                      background: "var(--rs-surface-2)",
+                      border: "1px solid var(--rs-hairline)",
+                      fontSize: 11,
+                      fontWeight: 500,
+                      color: "var(--rs-text-secondary)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontVariantNumeric: "tabular-nums",
+                      flexShrink: 0,
+                      marginTop: 1,
+                    }}
+                  >
+                    {j + 1}
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      fontSize: "var(--rs-text-body)",
+                      lineHeight: "var(--rs-leading-relaxed)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                    dangerouslySetInnerHTML={{ __html: inline(item) }}
+                  />
+                </li>
+              ))}
+            </ol>
+          );
+        }
+        return (
+          <p
+            key={i}
+            style={{
+              margin: 0,
+              maxWidth: "68ch",
+              fontSize: "var(--rs-text-body)",
+              lineHeight: "var(--rs-leading-relaxed)",
+              color: "var(--rs-text-secondary)",
+            }}
+            dangerouslySetInnerHTML={{ __html: inline(b.text) }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+function riskTone(score: number): "danger" | "warn" | "info" | "neutral" {
+  if (score >= 0.75) return "danger";
+  if (score >= 0.5) return "warn";
+  if (score >= 0.25) return "info";
+  return "neutral";
+}
+
+function riskLabel(score: number): string {
+  if (score >= 0.75) return "critical";
+  if (score >= 0.5) return "high";
+  if (score >= 0.25) return "moderate";
+  return "low";
+}
+
+// ── page ───────────────────────────────────────────────────────────────────
+
+export function DocsPage() {
+  const navigate = useNavigate();
+  const { activeAnalysisId } = useAppStore();
+  const [doc, setDoc] = useState<DocumentationResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeAnalysisId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    getDocumentation(activeAnalysisId)
+      .then(setDoc)
+      .catch(() => setError("Could not load documentation for this analysis."))
+      .finally(() => setLoading(false));
+  }, [activeAnalysisId]);
+
+  if (!activeAnalysisId) {
+    return (
+      <PageShell width="base">
+        <PageHero
+          eyebrow="Documentation"
+          title="Onboarding, grounded in this repo"
+          lede="Run an analysis on a repository, then come back here for a generated walkthrough — entry points, key modules, and a reading path."
+        />
+        <EmptyState
+          icon={<BookOpen size={16} />}
+          title="No analysis active"
+          detail="Pick or add a repository to generate documentation."
+        />
+      </PageShell>
+    );
+  }
+
+  if (loading) {
+    return (
+      <PageShell width="base">
+        <Skeleton width="40%" height={14} />
+        <Skeleton width="80%" height={28} />
+        <Skeleton width="60%" height={12} />
+        <div
+          className="flex items-center gap-2"
+          style={{ color: "var(--rs-text-muted)" }}
+        >
+          <Loader2 className="animate-spin" size={12} />
+          <MetaText>Composing documentation…</MetaText>
+        </div>
+      </PageShell>
+    );
+  }
+
+  if (error || !doc) {
+    return (
+      <PageShell width="base">
+        <PageHero eyebrow="Documentation" title="We couldn't load the docs" />
+        <Callout tone="warn" title="Documentation unavailable">
+          {error ?? "The documentation service returned no content."}
+        </Callout>
+      </PageShell>
+    );
+  }
+
+  const stats = doc.stats ?? {
+    total_files: 0,
+    total_lines: 0,
+    total_functions: 0,
+    total_classes: 0,
+    modules: 0,
+    cycle_count: 0,
+  };
+
+  const onboardingClean = doc.onboarding_doc
+    ? cleanDocSource(doc.onboarding_doc, [
+        "quick stats",
+        "where to start",
+        "key modules",
+        "central files",
+      ])
+    : "";
+
+  const architectureClean = doc.architecture_doc
+    ? cleanDocSource(doc.architecture_doc, [
+        "module structure",
+        "most imported files",
+      ])
+    : "";
+
+  const heroMeta = (
+    <>
+      {doc.detected_language && (
+        <>
+          <MetaText>{doc.detected_language}</MetaText>
+          <DotSep />
+        </>
+      )}
+      {doc.detected_framework && (
+        <>
+          <MetaText>{doc.detected_framework}</MetaText>
+          <DotSep />
+        </>
+      )}
+      <MetaText>
+        {stats.total_files.toLocaleString()} files ·{" "}
+        {stats.total_lines.toLocaleString()} lines
+      </MetaText>
+    </>
+  );
+
+  return (
+    <PageShell width="wide">
+      <PageHero
+        eyebrow="Documentation · Onboarding guide"
+        title={
+          doc.repo_name
+            ? `Get up to speed on ${doc.repo_name}`
+            : "Get up to speed on this codebase"
+        }
+        lede="Generated from the analysis snapshot — every section is grounded in real files, not placeholder templates. Use the rail on the right to jump straight to what you need."
+        meta={heroMeta}
+      />
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) 200px",
+          gap: 40,
+          alignItems: "start",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 40 }}>
+          {/* ── snapshot ───────────────────────────────────────────────── */}
+          <Section
+            id="snapshot"
+            title="Snapshot"
+            description="What the parser saw when it walked the repo."
+          >
+            <StatStrip
+              items={[
+                { label: "Files", value: stats.total_files.toLocaleString() },
+                {
+                  label: "Lines",
+                  value: stats.total_lines.toLocaleString(),
+                },
+                {
+                  label: "Functions",
+                  value: stats.total_functions.toLocaleString(),
+                },
+                {
+                  label: "Classes",
+                  value: stats.total_classes.toLocaleString(),
+                },
+                { label: "Modules", value: stats.modules.toLocaleString() },
+                {
+                  label: "Cycles",
+                  value: stats.cycle_count.toLocaleString(),
+                  tone:
+                    stats.cycle_count > 0 ? "var(--rs-sev-high)" : undefined,
+                },
+              ]}
+            />
+          </Section>
+
+          {/* ── getting started ────────────────────────────────────────── */}
+          {onboardingClean ? (
+            <Section
+              id="getting-started"
+              title="Getting started"
+              description="A short narrative from the generator — the structured entry points, modules, and central files live in their own sections below."
+            >
+              <Card variant="flat" padding={22}>
+                <Prose source={onboardingClean} />
+              </Card>
+            </Section>
+          ) : null}
+
+          {/* ── architecture ───────────────────────────────────────────── */}
+          {architectureClean ? (
+            <Section
+              id="architecture"
+              title="Architecture"
+              description="Graph-level metrics and narrative. The module table and most-imported list live in their own sections below."
+            >
+              <Card variant="flat" padding={22}>
+                <Prose source={architectureClean} />
+              </Card>
+            </Section>
+          ) : null}
+
+          {/* ── modules ────────────────────────────────────────────────── */}
+          <Section
+            id="modules"
+            title="Key modules"
+            description="The largest cohesive groups in the import graph. Cohesion measures how tightly the module talks to itself versus the rest of the codebase."
+          >
+            {doc.key_modules.length === 0 ? (
+              <EmptyState
+                title="No modules surfaced"
+                detail="The clustering step did not return modules large enough to highlight."
+              />
+            ) : (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+                  gap: 12,
+                }}
+              >
+                {doc.key_modules.map((m, i) => (
+                  <Card key={`${m.name}-${i}`} variant="flat" padding={16}>
+                    <CardHeader
+                      title={m.name}
+                      meta={m.path ? <Mono>{m.path}</Mono> : undefined}
+                      trailing={
+                        typeof m.file_count === "number" ? (
+                          <Tag size="sm">{m.file_count} files</Tag>
+                        ) : undefined
+                      }
+                    />
+                    <p
+                      style={{
+                        margin: "10px 0 0",
+                        fontSize: "var(--rs-text-body)",
+                        lineHeight: "var(--rs-leading-relaxed)",
+                        color: "var(--rs-text-secondary)",
+                      }}
+                    >
+                      {m.description}
+                    </p>
+                    {typeof m.cohesion === "number" && (
+                      <SubSection
+                        title={
+                          <span
+                            style={{
+                              fontSize: "var(--rs-text-eyebrow)",
+                              fontWeight: 600,
+                              color: "var(--rs-text-muted)",
+                              textTransform: "uppercase",
+                              letterSpacing: "var(--rs-tracking-eyebrow)",
+                            }}
+                          >
+                            Cohesion ·{" "}
+                            <span
+                              style={{
+                                fontVariantNumeric: "tabular-nums",
+                                color: "var(--rs-text-secondary)",
+                              }}
+                            >
+                              {Math.round((m.cohesion ?? 0) * 100)}%
+                            </span>
+                          </span>
+                        }
+                        style={{ marginTop: 14, gap: 6 }}
+                      >
+                        <MetricBar value={(m.cohesion ?? 0) * 100} />
+                        {typeof m.external_edges === "number" && (
+                          <MetaText>
+                            {m.external_edges} external edge
+                            {m.external_edges === 1 ? "" : "s"}
+                          </MetaText>
+                        )}
+                      </SubSection>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          {/* ── entry points ───────────────────────────────────────────── */}
+          <Section
+            id="entry-points"
+            title="Entry points"
+            description="Where execution starts. Read these first to follow how the system actually wakes up."
+          >
+            {doc.entry_points.length === 0 ? (
+              <EmptyState
+                title="No entry points detected"
+                detail="The detector did not find a main module, server bootstrap, or CLI entry."
+              />
+            ) : (
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                {doc.entry_points.map((e, i) => (
+                  <Card key={`${e.path}-${i}`} variant="flat" padding={16}>
+                    <CardHeader
+                      title={
+                        <div className="flex items-center gap-2">
+                          <Zap size={12} color="var(--rs-accent)" />
+                          <span>{e.name}</span>
+                        </div>
+                      }
+                      meta={<Path value={e.path} />}
+                      trailing={
+                        e.language ? (
+                          <Tag size="sm">{e.language}</Tag>
+                        ) : undefined
+                      }
+                    />
+                    {e.snippet && (
+                      <pre
+                        style={{
+                          margin: "12px 0 0",
+                          padding: "10px 12px",
+                          background: "var(--rs-surface-0)",
+                          border: "1px solid var(--rs-hairline)",
+                          borderRadius: "var(--rs-radius-md)",
+                          overflowX: "auto",
+                          fontFamily: "var(--rs-font-mono)",
+                          fontSize: "var(--rs-text-meta)",
+                          lineHeight: 1.6,
+                          color: "var(--rs-text-secondary)",
+                        }}
+                      >
+                        <code>{e.snippet}</code>
+                      </pre>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          {/* ── central / most imported ────────────────────────────────── */}
+          <Section
+            id="central"
+            title="Most imported"
+            description="Files that the rest of the codebase leans on. Changing these has the largest blast radius."
+          >
+            {doc.most_imported.length === 0 ? (
+              <EmptyState
+                title="No high-importance files surfaced"
+                detail="Either every file is roughly equal, or the import graph is too small to rank."
+              />
+            ) : (
+              <Card variant="flat" padding={0}>
+                {doc.most_imported.slice(0, 12).map((f, i) => (
+                  <div
+                    key={f.path}
+                    className="flex items-center gap-3"
+                    style={{
+                      padding: "10px 16px",
+                      borderTop:
+                        i === 0 ? undefined : "1px solid var(--rs-hairline)",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 22,
+                        fontSize: "var(--rs-text-meta)",
+                        color: "var(--rs-text-muted)",
+                        fontVariantNumeric: "tabular-nums",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <Path value={f.path} />
+                    </div>
+                    <span
+                      style={{
+                        fontSize: "var(--rs-text-meta)",
+                        color: "var(--rs-text-muted)",
+                        fontVariantNumeric: "tabular-nums",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {f.importers} importer{f.importers === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                ))}
+              </Card>
+            )}
+          </Section>
+
+          {/* ── risks ──────────────────────────────────────────────────── */}
+          <Section
+            id="risks"
+            title="Risk areas"
+            description="Files that combine high blast radius with structural complexity. Touch with care."
+          >
+            {doc.risk_areas.length === 0 ? (
+              <Callout tone="success" title="No standout risk hotspots">
+                The risk scorer did not flag any individual files for special
+                attention.
+              </Callout>
+            ) : (
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                {doc.risk_areas.slice(0, 8).map((r) => {
+                  const tone = riskTone(r.risk_score);
+                  return (
+                    <Card
+                      key={r.path}
+                      variant="feature"
+                      tone={
+                        tone === "danger"
+                          ? "danger"
+                          : tone === "warn"
+                            ? "warn"
+                            : "neutral"
+                      }
+                      padding={16}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Path value={r.path} />
+                          <p
+                            style={{
+                              margin: "8px 0 0",
+                              fontSize: "var(--rs-text-body)",
+                              lineHeight: "var(--rs-leading-relaxed)",
+                              color: "var(--rs-text-secondary)",
+                            }}
+                          >
+                            {r.reason}
+                          </p>
+                        </div>
+                        <div className="shrink-0 flex flex-col items-end gap-1">
+                          <Tag size="sm" tone={tone}>
+                            {riskLabel(r.risk_score)}
+                          </Tag>
+                          <span
+                            style={{
+                              fontSize: "var(--rs-text-meta)",
+                              color: "var(--rs-text-muted)",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {Math.round(r.risk_score * 100)} / 100
+                          </span>
+                        </div>
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </Section>
+
+          {/* ── cycles ─────────────────────────────────────────────────── */}
+          <Section
+            id="cycles"
+            title="Cycles"
+            description="Import cycles. Each cycle is a chain of files that ultimately import each other — usually a sign that two responsibilities have merged."
+          >
+            {doc.cycles.length === 0 ? (
+              <Callout tone="success" title="No import cycles detected">
+                The dependency graph is acyclic.
+              </Callout>
+            ) : (
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                {doc.cycles.slice(0, 6).map((cycle, i) => (
+                  <Card key={i} variant="flat" padding={14}>
+                    <CardHeader
+                      title={`Cycle ${i + 1}`}
+                      trailing={
+                        <Tag size="sm" tone="warn">
+                          {cycle.length} file{cycle.length === 1 ? "" : "s"}
+                        </Tag>
+                      }
+                    />
+                    <div
+                      style={{
+                        marginTop: 10,
+                        display: "flex",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        gap: 6,
+                        rowGap: 6,
+                      }}
+                    >
+                      {cycle.map((p, j) => (
+                        <div
+                          key={`${p}-${j}`}
+                          className="flex items-center gap-2"
+                        >
+                          <div
+                            className="flex items-center gap-1.5"
+                            style={{
+                              padding: "3px 8px",
+                              borderRadius: "var(--rs-radius-sm)",
+                              background: "var(--rs-surface-1)",
+                              border: "1px solid var(--rs-hairline)",
+                            }}
+                          >
+                            <FileCode size={10} color="var(--rs-text-muted)" />
+                            <Mono>{p}</Mono>
+                          </div>
+                          {j < cycle.length - 1 && (
+                            <ArrowRight
+                              size={11}
+                              color="var(--rs-text-muted)"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                ))}
+                {doc.cycles.length > 6 && (
+                  <MetaText>
+                    +{doc.cycles.length - 6} more cycles not shown.
+                  </MetaText>
+                )}
+              </div>
+            )}
+          </Section>
+
+          {/* ── reading path ──────────────────────────────────────────── */}
+          <Section
+            id="reading-path"
+            title="Reading path"
+            description="A short, opinionated route through the codebase — designed to give you the most context per minute of reading."
+          >
+            <Card variant="raised" padding={20}>
+              <FadeIn>
+                <ol
+                  style={{
+                    margin: 0,
+                    padding: 0,
+                    listStyle: "none",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 14,
+                  }}
+                >
+                  {[
+                    {
+                      label: "Start at an entry point",
+                      detail: doc.entry_points[0]
+                        ? `Open ${doc.entry_points[0].path} — it boots ${doc.repo_name ?? "the system"}.`
+                        : "Find where execution begins — a main module, server bootstrap, or CLI entry.",
+                    },
+                    {
+                      label: "Follow into the most imported file",
+                      detail: doc.most_imported[0]
+                        ? `From there, ${doc.most_imported[0].path} is referenced by ${doc.most_imported[0].importers} files — read it next to learn the shared vocabulary.`
+                        : "Pick the most-referenced file and read it to learn the shared vocabulary.",
+                    },
+                    {
+                      label: "Skim the key modules",
+                      detail: doc.key_modules[0]
+                        ? `Read the headers in ${doc.key_modules[0].name} — it's a high-cohesion area you'll keep returning to.`
+                        : "Skim each large module to learn what it owns.",
+                    },
+                    {
+                      label: "Visit the risk areas before editing",
+                      detail: doc.risk_areas[0]
+                        ? `Before you change anything, glance at ${doc.risk_areas[0].path} — it carries the highest blast radius.`
+                        : "Glance at any flagged risk areas so you know which files to touch carefully.",
+                    },
+                  ].map((step, i) => (
+                    <li
+                      key={i}
+                      className="flex gap-3"
+                      style={{ alignItems: "flex-start" }}
+                    >
+                      <div
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: 11,
+                          background: "var(--rs-surface-2)",
+                          border: "1px solid var(--rs-hairline)",
+                          fontSize: 11,
+                          fontWeight: 500,
+                          color: "var(--rs-text-secondary)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontVariantNumeric: "tabular-nums",
+                          flexShrink: 0,
+                          marginTop: 1,
+                        }}
+                      >
+                        {i + 1}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: "var(--rs-text-body)",
+                            fontWeight: 500,
+                            color: "var(--rs-text-primary)",
+                            marginBottom: 2,
+                          }}
+                        >
+                          {step.label}
+                        </div>
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: "var(--rs-text-body)",
+                            lineHeight: "var(--rs-leading-relaxed)",
+                            color: "var(--rs-text-secondary)",
+                          }}
+                        >
+                          {step.detail}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </FadeIn>
+              <div
+                className="flex items-center gap-2 flex-wrap"
+                style={{
+                  marginTop: 18,
+                  paddingTop: 14,
+                  borderTop: "1px solid var(--rs-hairline)",
+                }}
+              >
+                <Tag
+                  onClick={() => navigate("/app/files")}
+                  icon={<FileCode size={11} />}
+                >
+                  Open the file browser
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/graph")}
+                  icon={<GitBranch size={11} />}
+                >
+                  See the dependency graph
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/intelligence")}
+                  icon={<Compass size={11} />}
+                >
+                  Read the intelligence report
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/impact")}
+                  icon={<Target size={11} />}
+                >
+                  Plan a change
+                </Tag>
+              </div>
+            </Card>
+          </Section>
+        </div>
+
+        <div className="hidden lg:block">
+          <SectionNav
+            items={NAV_ITEMS.filter((item) => {
+              if (item.id === "getting-started") return !!onboardingClean;
+              if (item.id === "architecture") return !!architectureClean;
+              return true;
+            })}
+          />
+        </div>
+      </div>
+    </PageShell>
+  );
+}

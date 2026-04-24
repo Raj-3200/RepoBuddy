@@ -1,14 +1,16 @@
 """Parser registry — maps file extensions to parser instances."""
 
+from app.core.logging import get_logger
 from app.parsers.base import BaseParser, ParseResult
 from app.parsers.javascript import JavaScriptParser, TypeScriptParser
-from app.core.logging import get_logger
+from app.parsers.python import PythonParser
 
 logger = get_logger(__name__)
 
 _parsers: list[BaseParser] = [
     JavaScriptParser(),
     TypeScriptParser(),
+    PythonParser(),
 ]
 
 

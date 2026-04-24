@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import raise_not_found
 from app.dependencies import get_db
 from app.models.repository import Analysis
 from app.schemas.ai import ChatRequest, ChatResponse
 from app.services.ai_service import AIService
-from app.core.exceptions import raise_not_found
 
 router = APIRouter()
 

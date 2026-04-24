@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from pathlib import Path
 
@@ -9,8 +10,20 @@ from celery import shared_task
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.analysis.identity_engine import IdentityEngine
+from app.analysis.quality_engine import QualityEngine
+from app.analysis.stack_detector import StackDetector
 from app.config import get_settings
+from app.core.exceptions import InvalidRepositoryError
 from app.core.logging import get_logger
+from app.graph.analyzer import (
+    compute_graph_metrics,
+    compute_risk_scores,
+    detect_cycles,
+    find_isolated_nodes,
+    identify_modules,
+)
+from app.graph.builder import build_dependency_graph
 from app.models.repository import (
     Analysis,
     AnalysisStatus,
@@ -25,20 +38,14 @@ from app.models.repository import (
     SymbolType,
 )
 from app.parsers.registry import parse_file
-from app.graph.builder import build_dependency_graph
-from app.graph.analyzer import (
-    compute_graph_metrics,
-    detect_cycles,
-    compute_risk_scores,
-    identify_modules,
-    find_isolated_nodes,
-)
+from app.services.embedding_service import generate_embeddings_sync
 from app.services.repository_service import (
     clone_github_repo,
+    detect_framework,
     extract_zip_repo,
     scan_repository_files,
-    detect_framework,
 )
+from app.workers.celery_app import celery_app  # noqa: F401 — ensures app is loaded for shared_task
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -50,6 +57,8 @@ def _get_sync_session() -> Session:
 
 
 def _update_analysis(session: Session, analysis_id: str, **kwargs) -> None:
+    with contextlib.suppress(Exception):
+        session.rollback()
     analysis = session.get(Analysis, uuid.UUID(analysis_id))
     if analysis:
         for key, value in kwargs.items():
@@ -58,8 +67,15 @@ def _update_analysis(session: Session, analysis_id: str, **kwargs) -> None:
 
 
 @shared_task(bind=True, max_retries=2)
-def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
-    """Main analysis pipeline — runs as a Celery background task."""
+def run_analysis_pipeline(
+    self, repo_id: str, analysis_id: str, access_token: str | None = None
+) -> dict:
+    """Main analysis pipeline — runs as a Celery background task.
+
+    ``access_token`` is an optional per-request GitHub PAT used for private
+    repositories. It is not persisted anywhere; Celery carries it across
+    retries via the task's kwargs.
+    """
     session = _get_sync_session()
 
     try:
@@ -71,14 +87,16 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
 
         # ── Step 1: Clone / Extract ──
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.CLONING,
             current_step="Cloning or extracting repository...",
             progress=5,
         )
 
         if repo.source == RepositorySource.GITHUB and repo.url:
-            clone_github_repo(repo.url, repo_dir, settings.github_token or None)
+            token = access_token or (settings.github_token or None)
+            clone_github_repo(repo.url, repo_dir, token)
         elif repo.source == RepositorySource.UPLOAD:
             zip_path = settings.upload_path / f"{repo_id}.zip"
             if zip_path.exists():
@@ -88,7 +106,8 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
 
         # ── Step 2: Scan files ──
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.SCANNING,
             current_step="Scanning repository files...",
             progress=15,
@@ -97,7 +116,8 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
         file_infos = scan_repository_files(repo_dir)
         if not file_infos:
             _update_analysis(
-                session, analysis_id,
+                session,
+                analysis_id,
                 status=AnalysisStatus.FAILED,
                 error_message="No supported source files found in repository",
             )
@@ -126,7 +146,8 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
 
         # ── Step 3: Parse source files ──
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.PARSING,
             current_step="Parsing source files and extracting symbols...",
             progress=30,
@@ -142,6 +163,7 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
             file_path = repo_dir / fi["path"]
             try:
                 content = file_path.read_text(encoding="utf-8", errors="replace")
+                content = content.replace("\x00", "")
                 result = parse_file(fi["path"], content)
                 if result:
                     parse_results.append(result)
@@ -191,7 +213,8 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
 
         # ── Step 4: Build dependency graph ──
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.BUILDING_GRAPH,
             current_step="Building dependency graph...",
             progress=55,
@@ -216,7 +239,8 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
 
         # ── Step 5: Compute insights ──
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.COMPUTING_INSIGHTS,
             current_step="Computing architecture insights...",
             progress=70,
@@ -229,7 +253,7 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
         isolated = find_isolated_nodes(graph)
 
         # Save cycle insights
-        for i, cycle in enumerate(cycles):
+        for _i, cycle in enumerate(cycles):
             insight = Insight(
                 analysis_id=uuid.UUID(analysis_id),
                 category="circular_dependency",
@@ -269,26 +293,153 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
 
         # ── Step 6: Generate documentation ──
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.GENERATING_DOCS,
             current_step="Generating documentation...",
             progress=85,
         )
 
-        onboarding_doc = _generate_onboarding_doc(
-            repo, file_infos, modules, metrics, cycles
-        )
-        architecture_doc = _generate_architecture_doc(
-            repo, modules, metrics, risk_scores
-        )
+        onboarding_doc = _generate_onboarding_doc(repo, file_infos, modules, metrics, cycles)
+        architecture_doc = _generate_architecture_doc(repo, modules, metrics, risk_scores)
 
         # ── Step 7: Finalize ──
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.INDEXING,
-            current_step="Finalizing...",
+            current_step="Generating embeddings and indexing...",
             progress=95,
         )
+
+        # Generate embeddings for semantic search
+        embedded_count = 0
+        try:
+            embedded_count = generate_embeddings_sync(session, analysis_id)
+            logger.info("embeddings_generated", count=embedded_count, analysis_id=analysis_id)
+        except Exception as e:
+            logger.warning("embedding_generation_failed", error=str(e))
+            # Non-fatal — text search still works
+
+        # Trigger enterprise tasks (architecture snapshot + hotspots)
+        try:
+            from app.workers.enterprise_tasks import (
+                compute_architecture_snapshot,
+                compute_hotspots_and_ownership,
+            )
+
+            compute_architecture_snapshot.delay(repo_id, analysis_id)
+            compute_hotspots_and_ownership.delay(repo_id, analysis_id)
+            logger.info("enterprise_tasks_dispatched", repo_id=repo_id)
+        except Exception as e:
+            logger.warning("enterprise_tasks_dispatch_failed", error=str(e))
+            # Non-fatal — core analysis still succeeds
+
+        entry_points_list = []
+        for f in file_infos:
+            if not f.get("is_entry_point"):
+                continue
+            snippet = ""
+            lang = "text"
+            try:
+                ep_path = repo_dir / f["path"]
+                raw = ep_path.read_text(encoding="utf-8", errors="replace")
+                raw = raw.replace("\x00", "")
+                snippet = "\n".join(raw.splitlines()[:20])
+                ext = Path(f["path"]).suffix.lower()
+                lang = {
+                    ".ts": "typescript",
+                    ".tsx": "typescript",
+                    ".js": "javascript",
+                    ".jsx": "javascript",
+                    ".py": "python",
+                    ".go": "go",
+                    ".rs": "rust",
+                    ".java": "java",
+                    ".rb": "ruby",
+                    ".php": "php",
+                }.get(ext, "text")
+            except Exception:
+                pass
+            entry_points_list.append(
+                {
+                    "path": f["path"],
+                    "name": f["name"],
+                    "snippet": snippet,
+                    "language": lang,
+                }
+            )
+
+        # ── Engine: Stack Detection ──
+        stack_result_dict: dict = {}
+        try:
+            file_contents_sample = _sample_file_contents_sync(repo_dir, file_infos, max_files=30)
+            stack_detector = StackDetector(file_infos, file_contents_sample, repo_dir)
+            stack_result = stack_detector.detect()
+            stack_result_dict = stack_result.to_dict()
+            logger.info("stack_detection_complete", technologies=len(stack_result.technologies))
+        except Exception as e:
+            logger.warning("stack_detection_failed", error=str(e))
+
+        # ── Engine: Project Identity ──
+        identity_result_dict: dict = {}
+        try:
+            all_symbol_names = []
+            sym_result = session.execute(
+                select(Symbol.name).where(Symbol.analysis_id == uuid.UUID(analysis_id))
+            )
+            all_symbol_names = [row[0] for row in sym_result.all()]
+
+            identity_engine = IdentityEngine(file_infos, file_contents_sample, all_symbol_names)
+            identity_result = identity_engine.detect()
+            identity_result_dict = identity_result.to_dict()
+            logger.info(
+                "identity_detection_complete",
+                project_type=identity_result.project_type,
+                confidence=identity_result.confidence_level.value,
+            )
+        except Exception as e:
+            logger.warning("identity_detection_failed", error=str(e))
+
+        # ── Engine: Quality & Risk ──
+        quality_result_dict: dict = {}
+        try:
+            edge_dicts = [
+                {"source_path": e.source_path, "target_path": e.target_path}
+                for e in session.execute(
+                    select(DependencyEdge).where(
+                        DependencyEdge.analysis_id == uuid.UUID(analysis_id)
+                    )
+                )
+                .scalars()
+                .all()
+            ]
+            sym_per_file: dict[str, int] = {}
+            for row in session.execute(
+                select(Symbol.file_path, Symbol.id).where(
+                    Symbol.analysis_id == uuid.UUID(analysis_id)
+                )
+            ).all():
+                sym_per_file[row[0]] = sym_per_file.get(row[0], 0) + 1
+
+            quality_engine = QualityEngine(
+                file_infos=file_infos,
+                edges=edge_dicts,
+                symbols_per_file=sym_per_file,
+                graph_metrics=metrics,
+                cycle_count=len(cycles),
+                risk_scores=risk_scores,
+                modules=modules,
+            )
+            quality_report = quality_engine.compute()
+            quality_result_dict = quality_report.to_dict()
+            logger.info(
+                "quality_engine_complete",
+                overall_score=quality_report.overall_score,
+                anti_patterns=len(quality_report.anti_patterns),
+            )
+        except Exception as e:
+            logger.warning("quality_engine_failed", error=str(e))
 
         summary = {
             "total_files": len(file_infos),
@@ -305,10 +456,20 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
                 "moderate_risk_count": len([r for r in risk_scores if r["risk_score"] <= 0.6]),
             },
             "key_modules": modules[:5],
+            "entry_points": entry_points_list[:10],
+            "risk_areas": [
+                {"path": r["path"], "risk_score": r["risk_score"], "reason": r["reason"]}
+                for r in risk_scores[:10]
+            ],
+            # ── New intelligence engines ──
+            "stack": stack_result_dict,
+            "identity": identity_result_dict,
+            "quality": quality_result_dict,
         }
 
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.COMPLETED,
             current_step="Analysis complete",
             progress=100,
@@ -332,16 +493,79 @@ def run_analysis_pipeline(self, repo_id: str, analysis_id: str) -> dict:
 
         return {"status": "completed", "files": len(file_infos)}
 
-    except Exception as e:
-        logger.exception("analysis_pipeline_failed", repo_id=repo_id, error=str(e))
+    except InvalidRepositoryError as e:
+        # User-facing error (private repo, bad URL, etc.) — do NOT retry.
+        logger.warning("analysis_pipeline_user_error", repo_id=repo_id, error=str(e))
         _update_analysis(
-            session, analysis_id,
+            session,
+            analysis_id,
             status=AnalysisStatus.FAILED,
             error_message=str(e)[:2000],
         )
-        raise self.retry(exc=e, countdown=30)
+        return {"status": "failed", "error": str(e)}
+    except Exception as e:
+        logger.exception("analysis_pipeline_failed", repo_id=repo_id, error=str(e))
+        _update_analysis(
+            session,
+            analysis_id,
+            status=AnalysisStatus.FAILED,
+            error_message=str(e)[:2000],
+        )
+        raise self.retry(exc=e, countdown=30) from e
     finally:
         session.close()
+
+
+def _sample_file_contents_sync(
+    repo_dir: Path, file_infos: list[dict], max_files: int = 30
+) -> dict[str, str]:
+    """Read a sample of key files for stack/identity detection (sync version)."""
+    contents: dict[str, str] = {}
+    priority_names = {
+        "package.json",
+        "tsconfig.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "setup.py",
+        "Cargo.toml",
+        "go.mod",
+        "Gemfile",
+        "next.config.js",
+        "next.config.mjs",
+        "next.config.ts",
+        "vite.config.ts",
+        "vite.config.js",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+        "angular.json",
+        "svelte.config.js",
+        "jest.config.ts",
+        "jest.config.js",
+        "vitest.config.ts",
+        "README.md",
+        "readme.md",
+        "bun.lockb",
+        "bunfig.toml",
+        "prisma/schema.prisma",
+    }
+    config_files = [
+        f
+        for f in file_infos
+        if Path(f["path"]).name in priority_names or f["path"] in priority_names
+    ]
+    entry_files = [f for f in file_infos if f.get("is_entry_point")]
+    other_files = [f for f in file_infos if f not in config_files and f not in entry_files]
+    ordered = config_files + entry_files + other_files
+
+    for fi in ordered[:max_files]:
+        try:
+            fp = repo_dir / fi["path"]
+            if fp.exists() and fp.stat().st_size < 200_000:
+                raw = fp.read_text(encoding="utf-8", errors="replace")
+                contents[fi["path"]] = "\n".join(raw.splitlines()[:200])
+        except Exception:
+            continue
+    return contents
 
 
 def _create_semantic_chunks(
@@ -407,7 +631,7 @@ def _generate_onboarding_doc(repo, file_infos, modules, metrics, cycles) -> str:
             doc += f" written in **{repo.detected_language}**"
         doc += ".\n\n"
 
-    doc += f"## Quick Stats\n\n"
+    doc += "## Quick Stats\n\n"
     doc += f"- **Files:** {len(file_infos)}\n"
     doc += f"- **Total Lines:** {sum(f['line_count'] for f in file_infos):,}\n"
     doc += f"- **Modules:** {len(modules)}\n"

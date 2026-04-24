@@ -1,0 +1,1295 @@
+import { useState, useRef, useEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  Send,
+  Sparkles,
+  FileCode,
+  ChevronRight,
+  RotateCcw,
+  Copy,
+  Check,
+  ExternalLink,
+  AlertCircle,
+  BookOpen,
+  Hash,
+  Layers,
+  ArrowRight,
+} from "lucide-react";
+import { useAppStore } from "@/lib/store";
+import { chatWithAI } from "@/lib/api";
+
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations?: Citation[];
+  relatedFiles?: string[];
+  confidence?: "high" | "medium" | "low";
+  confidenceLabel?:
+    | "deterministic"
+    | "strong"
+    | "moderate"
+    | "weak"
+    | "unknown";
+  confidenceRationale?: string;
+  directAnswer?: string;
+  limitations?: string[];
+  grounded?: boolean;
+  followUps?: string[];
+}
+
+interface Citation {
+  file: string;
+  lines: string;
+  snippet: string;
+  relevance: "primary" | "supporting";
+}
+
+const SAMPLE_MESSAGES: Message[] = [
+  {
+    id: "1",
+    role: "user",
+    content:
+      "How does authentication work in this codebase? Walk me through the flow.",
+  },
+  {
+    id: "2",
+    role: "assistant",
+    content: `Authentication follows a layered approach with JWT-based session management and middleware enforcement.
+
+**The authentication flow works in three stages:**
+
+1. **Token issuance** — When a user authenticates, \`auth/index.ts\` calls \`signToken()\` from \`auth/jwt.ts\`, producing a signed JWT with user ID and scope embedded in the payload.
+
+2. **Request verification** — All protected routes pass through \`api/middleware.ts\` which calls \`verifyToken()\`. If the token is invalid or expired, the request is rejected with a 401 before reaching any handler.
+
+3. **User resolution** — After token verification, \`models/user.ts\` is called to hydrate the full user object from the database, making it available via \`req.user\` throughout the handler chain.
+
+The session data is also stored in \`lib/cache.ts\` with a TTL to avoid redundant database lookups on every request.`,
+    citations: [
+      {
+        file: "src/auth/index.ts",
+        lines: "42–78",
+        snippet:
+          "export async function authenticate(credentials: Credentials): Promise<AuthResult> {\n  const user = await findUser(credentials.email);\n  const token = signToken({ id: user.id, scope: user.role });\n  return { user, token };\n}",
+        relevance: "primary",
+      },
+      {
+        file: "src/auth/jwt.ts",
+        lines: "12–28",
+        snippet:
+          "export function signToken(payload: TokenPayload): string {\n  return jwt.sign(payload, config.JWT_SECRET, {\n    expiresIn: '7d',\n    algorithm: 'HS256'\n  });\n}",
+        relevance: "primary",
+      },
+      {
+        file: "src/api/middleware.ts",
+        lines: "15–44",
+        snippet:
+          "export function requireAuth(req, res, next) {\n  const token = req.headers.authorization?.split(' ')[1];\n  if (!token) return res.status(401).json({ error: 'Unauthorized' });\n  const payload = verifyToken(token);\n  req.user = payload;\n  next();\n}",
+        relevance: "supporting",
+      },
+    ],
+    relatedFiles: [
+      "src/models/user.ts",
+      "src/lib/cache.ts",
+      "src/utils/config.ts",
+    ],
+    confidence: "high",
+    followUps: [
+      "How is the JWT secret configured and rotated?",
+      "What happens when a token expires mid-session?",
+      "Are there any role-based access checks?",
+    ],
+  },
+  {
+    id: "3",
+    role: "user",
+    content: "What's the riskiest file in the codebase and why?",
+  },
+  {
+    id: "4",
+    role: "assistant",
+    content: `Based on the dependency analysis, \`src/api/router.ts\` is the highest-risk file in the codebase.
+
+**Why it's risky:**
+
+The router has the highest **fan-in** of any module — 34 direct dependents. A breaking change in this file will cascade into nearly **87% of the system's execution paths**. It imports from auth, handlers, middleware, and validation simultaneously, making it a coordination bottleneck.
+
+Additionally, the cyclomatic complexity score of **38** indicates multiple nested conditional branches, each of which is a potential failure surface. This file has no dedicated unit test coverage in the \`tests/\` directory.
+
+**What this means practically:** Any refactor of the routing layer requires careful coordination across the auth, API, and middleware domains. This file should be treated as a high-stability contract, not a working draft.`,
+    citations: [
+      {
+        file: "src/api/router.ts",
+        lines: "1–312",
+        snippet:
+          "import { authenticate } from '../auth';\nimport { handlers } from './handlers';\nimport { cors, rateLimit } from './middleware';\nimport { validateBody } from './validation';\n// 34 total dependents mapped",
+        relevance: "primary",
+      },
+    ],
+    relatedFiles: ["src/app.ts", "src/index.ts", "src/api/handlers.ts"],
+    confidence: "high",
+    followUps: [
+      "How can I safely refactor the router?",
+      "What would a healthier architecture look like here?",
+      "Which handlers are most complex inside the router?",
+    ],
+  },
+];
+
+const SUGGESTIONS = [
+  "How does authentication flow through this codebase?",
+  "What are the riskiest files I should understand first?",
+  "Explain the database layer architecture",
+  "Where are the entry points and how do they bootstrap?",
+  "Are there any circular dependencies I should know about?",
+];
+
+function CitationCard({ citation }: { citation: Citation }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    navigator.clipboard.writeText(citation.snippet);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden transition-all"
+      style={{
+        background: "var(--rs-surface-2)",
+        border: `1px solid ${citation.relevance === "primary" ? "rgba(124,108,245,0.25)" : "var(--rs-border)"}`,
+      }}
+    >
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors"
+        onMouseEnter={(e) =>
+          (e.currentTarget.style.background = "rgba(255,255,255,0.03)")
+        }
+        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+      >
+        <FileCode
+          size={11}
+          style={{
+            color:
+              citation.relevance === "primary"
+                ? "var(--rs-accent)"
+                : "var(--rs-text-muted)",
+            flexShrink: 0,
+          }}
+        />
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 500,
+            color: "var(--rs-text-primary)",
+            fontFamily: "monospace",
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {citation.file}
+        </span>
+        <span
+          style={{
+            fontSize: 10,
+            color: "var(--rs-text-muted)",
+            background: "var(--rs-surface-3)",
+            borderRadius: 4,
+            padding: "1px 6px",
+            fontFamily: "monospace",
+          }}
+        >
+          L{citation.lines}
+        </span>
+        {citation.relevance === "primary" && (
+          <span
+            className="rounded-full px-1.5 py-0.5 shrink-0"
+            style={{
+              fontSize: 9,
+              fontWeight: 600,
+              background: "rgba(124,108,245,0.15)",
+              color: "var(--rs-accent)",
+            }}
+          >
+            primary
+          </span>
+        )}
+        <ChevronRight
+          size={11}
+          style={{
+            color: "var(--rs-text-muted)",
+            transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+            transition: "transform 0.18s",
+            flexShrink: 0,
+          }}
+        />
+      </button>
+
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: "hidden" }}
+          >
+            <div style={{ borderTop: "1px solid var(--rs-border)" }}>
+              <div
+                className="flex items-center justify-between px-3.5 py-2"
+                style={{ borderBottom: "1px solid var(--rs-border)" }}
+              >
+                <span style={{ fontSize: 10, color: "var(--rs-text-muted)" }}>
+                  Code reference
+                </span>
+                <button
+                  onClick={copy}
+                  className="flex items-center gap-1 rounded px-2 py-0.5 transition-colors"
+                  style={{
+                    fontSize: 10,
+                    color: copied ? "var(--rs-green)" : "var(--rs-text-muted)",
+                    background: "transparent",
+                  }}
+                  onMouseEnter={(e) =>
+                    (e.currentTarget.style.background =
+                      "rgba(255,255,255,0.05)")
+                  }
+                  onMouseLeave={(e) =>
+                    (e.currentTarget.style.background = "transparent")
+                  }
+                >
+                  {copied ? <Check size={9} /> : <Copy size={9} />}
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <pre
+                style={{
+                  margin: 0,
+                  padding: "12px 14px",
+                  fontSize: 11,
+                  lineHeight: 1.65,
+                  color: "var(--rs-text-secondary)",
+                  fontFamily: "Geist Mono, monospace",
+                  overflowX: "auto",
+                  background: "rgba(0,0,0,0.2)",
+                }}
+              >
+                <code>{citation.snippet}</code>
+              </pre>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function MessageContent({ content }: { content: string }) {
+  // Simple markdown-like rendering for bold and code
+  const lines = (content ?? "").split("\n");
+  return (
+    <div style={{ lineHeight: 1.7 }}>
+      {lines.map((line, i) => {
+        if (line.startsWith("**") && line.endsWith("**")) {
+          return (
+            <p
+              key={i}
+              style={{
+                fontWeight: 600,
+                color: "var(--rs-text-primary)",
+                marginBottom: 6,
+                marginTop: i > 0 ? 12 : 0,
+              }}
+            >
+              {line.replace(/\*\*/g, "")}
+            </p>
+          );
+        }
+        if (
+          line.startsWith("1. ") ||
+          line.startsWith("2. ") ||
+          line.startsWith("3. ")
+        ) {
+          const parts = line.split(" — ");
+          return (
+            <div key={i} className="flex gap-3 mb-3">
+              <span
+                style={{
+                  color: "var(--rs-accent)",
+                  fontWeight: 600,
+                  fontSize: 12,
+                  flexShrink: 0,
+                }}
+              >
+                {line[0]}
+              </span>
+              <p
+                style={{
+                  fontSize: 13,
+                  color: "var(--rs-text-secondary)",
+                  margin: 0,
+                }}
+              >
+                {parts[0].slice(3) && (
+                  <strong
+                    style={{ color: "var(--rs-text-primary)", fontWeight: 500 }}
+                  >
+                    {parts[0].slice(3)}
+                  </strong>
+                )}
+                {parts[1] && ` — ${parts[1]}`}
+              </p>
+            </div>
+          );
+        }
+        if (line === "") return <div key={i} style={{ height: 6 }} />;
+        // Inline code
+        const formatted = line
+          .replace(
+            /`([^`]+)`/g,
+            (_, code) =>
+              `<code style="font-family:Geist Mono,monospace;font-size:11px;background:rgba(124,108,245,0.12);color:var(--rs-accent);border-radius:3px;padding:1px 5px;">${code}</code>`,
+          )
+          .replace(
+            /\*\*([^*]+)\*\*/g,
+            (_, text) =>
+              `<strong style="color:var(--rs-text-primary);font-weight:500;">${text}</strong>`,
+          );
+        return (
+          <p
+            key={i}
+            dangerouslySetInnerHTML={{ __html: formatted }}
+            style={{
+              fontSize: 13,
+              color: "var(--rs-text-secondary)",
+              marginBottom: 4,
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+export function AIWorkspace() {
+  const { activeAnalysisId } = useAppStore();
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    setMessages([]);
+    setInput("");
+  }, [activeAnalysisId]);
+
+  const send = async (text: string) => {
+    if (!text.trim() || isTyping) return;
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: text,
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setIsTyping(true);
+
+    if (!activeAnalysisId) {
+      setIsTyping(false);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content:
+            "No analysis is active. Please run an analysis first before asking questions about the codebase.",
+          confidence: "low",
+        },
+      ]);
+      return;
+    }
+
+    try {
+      const history = messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const resp = await chatWithAI(activeAnalysisId, text, history);
+      const confLabel = resp.confidence ?? "unknown";
+      const confBucket: "high" | "medium" | "low" =
+        confLabel === "deterministic" || confLabel === "strong"
+          ? "high"
+          : confLabel === "moderate"
+            ? "medium"
+            : "low";
+      const assistantMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: resp.explanation || resp.message,
+        directAnswer: resp.direct_answer ?? undefined,
+        confidenceLabel: confLabel as Message["confidenceLabel"],
+        confidenceRationale: resp.confidence_rationale ?? undefined,
+        limitations: resp.limitations ?? [],
+        grounded: resp.grounded ?? true,
+        relatedFiles: resp.related_files ?? [],
+        citations: (resp.citations ?? []).map((c: any) => ({
+          file: c.file_path ?? c.file ?? "",
+          lines: c.lines ?? "",
+          snippet: c.content ?? c.snippet ?? "",
+          relevance: "primary" as const,
+        })),
+        confidence: confBucket,
+        followUps: resp.suggested_questions ?? [],
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: "Sorry, something went wrong. Please try again.",
+          confidence: "low",
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send(input);
+    }
+  };
+
+  return (
+    <div className="flex h-full" style={{ background: "var(--rs-base)" }}>
+      {/* Chat area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header */}
+        <div
+          className="flex items-center justify-between px-6 py-4 shrink-0"
+          style={{ borderBottom: "1px solid var(--rs-border)" }}
+        >
+          <div className="flex items-center gap-3">
+            <div
+              className="flex items-center justify-center rounded-xl"
+              style={{
+                width: 34,
+                height: 34,
+                background: "rgba(124,108,245,0.12)",
+                border: "1px solid rgba(124,108,245,0.2)",
+              }}
+            >
+              <Sparkles size={14} style={{ color: "var(--rs-accent)" }} />
+            </div>
+            <div>
+              <h2
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: "var(--rs-text-primary)",
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                AI Workspace
+              </h2>
+              <p style={{ fontSize: 11, color: "var(--rs-text-muted)" }}>
+                Grounded in code analysis ·{" "}
+                {messages
+                  .filter((m) => m.citations)
+                  .reduce((a, m) => a + (m.citations?.length ?? 0), 0)}{" "}
+                citations available
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setMessages([])}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-colors"
+            style={{
+              fontSize: 12,
+              color: "var(--rs-text-muted)",
+              background: "var(--rs-surface-1)",
+              border: "1px solid var(--rs-border)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "var(--rs-text-primary)";
+              e.currentTarget.style.borderColor = "var(--rs-border-strong)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "var(--rs-text-muted)";
+              e.currentTarget.style.borderColor = "var(--rs-border)";
+            }}
+          >
+            <RotateCcw size={11} />
+            New session
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+          {messages.length === 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex flex-col items-center pt-16 gap-4"
+            >
+              <div
+                className="rounded-2xl flex items-center justify-center"
+                style={{
+                  width: 56,
+                  height: 56,
+                  background: "rgba(124,108,245,0.1)",
+                  border: "1px solid rgba(124,108,245,0.2)",
+                }}
+              >
+                <Sparkles size={22} style={{ color: "var(--rs-accent)" }} />
+              </div>
+              <div className="text-center">
+                <h3
+                  style={{
+                    fontSize: 16,
+                    fontWeight: 600,
+                    color: "var(--rs-text-primary)",
+                    marginBottom: 8,
+                    letterSpacing: "-0.02em",
+                  }}
+                >
+                  Ask anything about the codebase
+                </h3>
+                <p
+                  style={{
+                    fontSize: 13,
+                    color: "var(--rs-text-muted)",
+                    maxWidth: 380,
+                  }}
+                >
+                  Every answer is grounded in real code evidence with citations,
+                  so you can verify exactly what the AI is saying.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 mt-4 w-full max-w-md">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => send(s)}
+                    className="flex items-center gap-2 rounded-xl px-4 py-3 text-left transition-all"
+                    style={{
+                      background: "var(--rs-surface-1)",
+                      border: "1px solid var(--rs-border)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor =
+                        "rgba(124,108,245,0.25)";
+                      e.currentTarget.style.color = "var(--rs-text-primary)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = "var(--rs-border)";
+                      e.currentTarget.style.color = "var(--rs-text-secondary)";
+                    }}
+                  >
+                    <ArrowRight
+                      size={12}
+                      style={{ color: "var(--rs-accent)", flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: 13 }}>{s}</span>
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
+
+          <div className="flex flex-col gap-8 max-w-3xl mx-auto">
+            {messages.map((msg, i) => (
+              <motion.div
+                key={msg.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+              >
+                {msg.role === "user" ? (
+                  <div className="flex justify-end">
+                    <div
+                      className="rounded-2xl rounded-tr-sm px-4 py-3 max-w-lg"
+                      style={{
+                        background: "var(--rs-surface-2)",
+                        border: "1px solid var(--rs-border-strong)",
+                      }}
+                    >
+                      <p
+                        style={{
+                          fontSize: 14,
+                          color: "var(--rs-text-primary)",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {msg.content}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex gap-3">
+                    <div
+                      className="rounded-xl flex items-center justify-center shrink-0 mt-1"
+                      style={{
+                        width: 28,
+                        height: 28,
+                        background: "rgba(124,108,245,0.15)",
+                        border: "1px solid rgba(124,108,245,0.25)",
+                      }}
+                    >
+                      <Sparkles
+                        size={12}
+                        style={{ color: "var(--rs-accent)" }}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      {/* Confidence + grounded badges */}
+                      {(msg.confidence ||
+                        msg.confidenceLabel ||
+                        msg.grounded === false) && (
+                        <div className="flex items-center gap-2 mb-3 flex-wrap">
+                          {(msg.confidenceLabel || msg.confidence) &&
+                            (() => {
+                              const label =
+                                msg.confidenceLabel ??
+                                (msg.confidence === "high"
+                                  ? "strong"
+                                  : msg.confidence === "medium"
+                                    ? "moderate"
+                                    : "weak");
+                              const bucket =
+                                label === "deterministic" || label === "strong"
+                                  ? {
+                                      fg: "var(--rs-green)",
+                                      bg: "var(--rs-green-dim)",
+                                      border: "rgba(34,197,94,0.22)",
+                                    }
+                                  : label === "moderate"
+                                    ? {
+                                        fg: "var(--rs-amber)",
+                                        bg: "var(--rs-amber-dim)",
+                                        border: "rgba(245,158,11,0.24)",
+                                      }
+                                    : label === "unknown"
+                                      ? {
+                                          fg: "var(--rs-text-muted)",
+                                          bg: "var(--rs-surface-2)",
+                                          border: "var(--rs-border)",
+                                        }
+                                      : {
+                                          fg: "var(--rs-red)",
+                                          bg: "var(--rs-red-dim)",
+                                          border: "rgba(242,83,83,0.24)",
+                                        };
+                              return (
+                                <div
+                                  className="flex items-center gap-1.5 rounded-full px-2 py-0.5"
+                                  title={msg.confidenceRationale ?? ""}
+                                  style={{
+                                    fontSize: 10,
+                                    fontWeight: 500,
+                                    background: bucket.bg,
+                                    color: bucket.fg,
+                                    border: `1px solid ${bucket.border}`,
+                                    textTransform: "capitalize",
+                                  }}
+                                >
+                                  <div
+                                    className="rounded-full"
+                                    style={{
+                                      width: 5,
+                                      height: 5,
+                                      background: bucket.fg,
+                                    }}
+                                  />
+                                  {label} confidence
+                                  {(msg.citations?.length ?? 0) > 0 &&
+                                    ` · ${msg.citations!.length} citations`}
+                                </div>
+                              );
+                            })()}
+                          {msg.grounded === false && (
+                            <div
+                              className="flex items-center gap-1.5 rounded-full px-2 py-0.5"
+                              title="No supporting code evidence was attached. Treat this as interpretation."
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 500,
+                                background: "var(--rs-amber-dim)",
+                                color: "var(--rs-amber)",
+                                border: "1px solid rgba(245,158,11,0.24)",
+                              }}
+                            >
+                              <AlertCircle size={10} />
+                              Not grounded in evidence
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Direct answer */}
+                      {msg.directAnswer && (
+                        <div
+                          className="rounded-lg mb-3"
+                          style={{
+                            background: "rgba(124,108,245,0.06)",
+                            border: "1px solid rgba(124,108,245,0.2)",
+                            padding: "10px 12px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              color: "var(--rs-accent)",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                              marginBottom: 4,
+                            }}
+                          >
+                            Direct answer
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 13.5,
+                              color: "var(--rs-text-primary)",
+                              lineHeight: 1.55,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {msg.directAnswer}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Answer */}
+                      <MessageContent content={msg.content} />
+
+                      {/* Confidence rationale */}
+                      {msg.confidenceRationale && (
+                        <div
+                          className="mt-3"
+                          style={{
+                            fontSize: 11,
+                            color: "var(--rs-text-muted)",
+                            lineHeight: 1.5,
+                            fontStyle: "italic",
+                          }}
+                        >
+                          Why this confidence: {msg.confidenceRationale}
+                        </div>
+                      )}
+
+                      {/* Limitations */}
+                      {msg.limitations && msg.limitations.length > 0 && (
+                        <div
+                          className="mt-4 rounded-lg"
+                          style={{
+                            background: "var(--rs-amber-dim)",
+                            border: "1px solid rgba(245,158,11,0.22)",
+                            padding: "10px 12px",
+                          }}
+                        >
+                          <div
+                            className="flex items-center gap-1.5"
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              color: "var(--rs-amber)",
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                              marginBottom: 6,
+                            }}
+                          >
+                            <AlertCircle size={11} />
+                            What this answer does not tell you
+                          </div>
+                          <ul
+                            style={{
+                              fontSize: 11.5,
+                              color: "var(--rs-text-secondary)",
+                              lineHeight: 1.5,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 3,
+                            }}
+                          >
+                            {msg.limitations.map((l, i) => (
+                              <li key={i}>— {l}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Citations */}
+                      {msg.citations && msg.citations.length > 0 && (
+                        <div className="mt-5">
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "var(--rs-text-muted)",
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                              marginBottom: 8,
+                            }}
+                          >
+                            Evidence
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            {msg.citations.map((cit, ci) => (
+                              <CitationCard key={ci} citation={cit} />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Related files */}
+                      {msg.relatedFiles && msg.relatedFiles.length > 0 && (
+                        <div className="mt-4">
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "var(--rs-text-muted)",
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                              marginBottom: 8,
+                            }}
+                          >
+                            Related Files
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {msg.relatedFiles.map((f) => (
+                              <button
+                                key={f}
+                                className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 transition-colors"
+                                style={{
+                                  fontSize: 11,
+                                  color: "var(--rs-text-secondary)",
+                                  background: "var(--rs-surface-2)",
+                                  border: "1px solid var(--rs-border)",
+                                  fontFamily: "monospace",
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.borderColor =
+                                    "rgba(124,108,245,0.25)";
+                                  e.currentTarget.style.color =
+                                    "var(--rs-text-primary)";
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.borderColor =
+                                    "var(--rs-border)";
+                                  e.currentTarget.style.color =
+                                    "var(--rs-text-secondary)";
+                                }}
+                              >
+                                <FileCode
+                                  size={10}
+                                  style={{ color: "var(--rs-accent)" }}
+                                />
+                                {f}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Follow-up suggestions */}
+                      {msg.followUps && msg.followUps.length > 0 && (
+                        <div
+                          className="mt-5 pt-4"
+                          style={{ borderTop: "1px solid var(--rs-border)" }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "var(--rs-text-muted)",
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                              marginBottom: 8,
+                            }}
+                          >
+                            Follow-up
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            {msg.followUps.map((fu) => (
+                              <button
+                                key={fu}
+                                onClick={() => send(fu)}
+                                className="flex items-center gap-2 text-left rounded-lg px-3 py-2 transition-all"
+                                style={{
+                                  fontSize: 12,
+                                  color: "var(--rs-text-secondary)",
+                                  background: "transparent",
+                                  border: "1px solid var(--rs-border)",
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.borderColor =
+                                    "rgba(124,108,245,0.25)";
+                                  e.currentTarget.style.color =
+                                    "var(--rs-text-primary)";
+                                  e.currentTarget.style.background =
+                                    "rgba(124,108,245,0.05)";
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.borderColor =
+                                    "var(--rs-border)";
+                                  e.currentTarget.style.color =
+                                    "var(--rs-text-secondary)";
+                                  e.currentTarget.style.background =
+                                    "transparent";
+                                }}
+                              >
+                                <ChevronRight
+                                  size={10}
+                                  style={{
+                                    color: "var(--rs-accent)",
+                                    flexShrink: 0,
+                                  }}
+                                />
+                                {fu}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            ))}
+
+            {/* Typing indicator */}
+            {isTyping && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex gap-3"
+              >
+                <div
+                  className="rounded-xl flex items-center justify-center shrink-0 mt-1"
+                  style={{
+                    width: 28,
+                    height: 28,
+                    background: "rgba(124,108,245,0.15)",
+                    border: "1px solid rgba(124,108,245,0.25)",
+                  }}
+                >
+                  <Sparkles size={12} style={{ color: "var(--rs-accent)" }} />
+                </div>
+                <div
+                  className="rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-1.5"
+                  style={{
+                    background: "var(--rs-surface-1)",
+                    border: "1px solid var(--rs-border)",
+                  }}
+                >
+                  {[0, 1, 2].map((i) => (
+                    <motion.div
+                      key={i}
+                      animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1, 0.8] }}
+                      transition={{
+                        duration: 1.2,
+                        repeat: Infinity,
+                        delay: i * 0.2,
+                      }}
+                      className="rounded-full"
+                      style={{
+                        width: 5,
+                        height: 5,
+                        background: "var(--rs-text-muted)",
+                      }}
+                    />
+                  ))}
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: "var(--rs-text-muted)",
+                      marginLeft: 4,
+                    }}
+                  >
+                    Analyzing codebase…
+                  </span>
+                </div>
+              </motion.div>
+            )}
+            <div ref={bottomRef} />
+          </div>
+        </div>
+
+        {/* Input area */}
+        <div
+          className="shrink-0 px-6 pb-5 pt-4"
+          style={{ borderTop: "1px solid var(--rs-border)" }}
+        >
+          <div
+            className="rounded-2xl flex items-end gap-3 px-4 py-3 max-w-3xl mx-auto"
+            style={{
+              background: "var(--rs-surface-1)",
+              border: "1px solid var(--rs-border-strong)",
+              boxShadow: "0 4px 20px rgba(0,0,0,0.2)",
+              transition: "border-color 0.2s",
+            }}
+            onFocus={() => {}}
+          >
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="Ask anything about this codebase…"
+              rows={1}
+              style={{
+                flex: 1,
+                background: "transparent",
+                border: "none",
+                outline: "none",
+                fontSize: 14,
+                color: "var(--rs-text-primary)",
+                resize: "none",
+                lineHeight: 1.6,
+                fontFamily: "Inter, sans-serif",
+                maxHeight: 140,
+                overflowY: "auto",
+              }}
+              onInput={(e) => {
+                const t = e.target as HTMLTextAreaElement;
+                t.style.height = "auto";
+                t.style.height = Math.min(t.scrollHeight, 140) + "px";
+              }}
+            />
+            <button
+              onClick={() => send(input)}
+              disabled={!input.trim() || isTyping}
+              className="flex items-center justify-center rounded-xl shrink-0 transition-all"
+              style={{
+                width: 34,
+                height: 34,
+                background:
+                  input.trim() && !isTyping
+                    ? "var(--rs-accent)"
+                    : "var(--rs-surface-2)",
+                color:
+                  input.trim() && !isTyping ? "white" : "var(--rs-text-muted)",
+                border: "none",
+                boxShadow:
+                  input.trim() && !isTyping
+                    ? "0 2px 12px rgba(124,108,245,0.4)"
+                    : "none",
+                transition: "all 0.2s",
+              }}
+            >
+              <Send size={13} />
+            </button>
+          </div>
+          <p
+            style={{
+              fontSize: 11,
+              color: "var(--rs-text-muted)",
+              textAlign: "center",
+              marginTop: 8,
+            }}
+          >
+            Answers grounded in real code evidence · Enter to send, Shift+Enter
+            for new line
+          </p>
+        </div>
+      </div>
+
+      {/* Context sidebar */}
+      <div
+        className="hidden lg:flex flex-col shrink-0"
+        style={{
+          width: 240,
+          borderLeft: "1px solid var(--rs-border)",
+          background: "var(--rs-sidebar)",
+        }}
+      >
+        <div
+          className="px-4 py-4"
+          style={{ borderBottom: "1px solid var(--rs-border)" }}
+        >
+          <h3
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "var(--rs-text-muted)",
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+            }}
+          >
+            Active Context
+          </h3>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-4 flex flex-col gap-4">
+          <div>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: "var(--rs-text-muted)",
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                marginBottom: 8,
+              }}
+            >
+              Repository
+            </div>
+            <div
+              className="rounded-lg px-3 py-2.5"
+              style={{
+                background: "var(--rs-surface-2)",
+                border: "1px solid var(--rs-border)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: "var(--rs-text-primary)",
+                }}
+              >
+                Current analysis
+              </div>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "var(--rs-text-muted)",
+                  marginTop: 2,
+                }}
+              >
+                {activeAnalysisId ? "Indexed" : "No analysis"}
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: "var(--rs-text-muted)",
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                marginBottom: 8,
+              }}
+            >
+              Session Stats
+            </div>
+            <div className="flex flex-col gap-2">
+              {[
+                {
+                  label: "Questions asked",
+                  value: String(
+                    messages.filter((m) => m.role === "user").length,
+                  ),
+                },
+                {
+                  label: "Citations surfaced",
+                  value: String(
+                    messages
+                      .filter((m) => m.citations)
+                      .reduce((a, m) => a + (m.citations?.length ?? 0), 0),
+                  ),
+                },
+                {
+                  label: "Files referenced",
+                  value: String(
+                    new Set(
+                      messages.flatMap((m) => [
+                        ...(m.citations?.map((c) => c.file) ?? []),
+                        ...(m.relatedFiles ?? []),
+                      ]),
+                    ).size,
+                  ),
+                },
+              ].map((s) => (
+                <div
+                  key={s.label}
+                  className="flex items-center justify-between"
+                >
+                  <span style={{ fontSize: 12, color: "var(--rs-text-muted)" }}>
+                    {s.label}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--rs-text-primary)",
+                    }}
+                  >
+                    {s.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: "var(--rs-text-muted)",
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                marginBottom: 8,
+              }}
+            >
+              Suggested Topics
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {[
+                { icon: Layers, label: "Architecture overview" },
+                { icon: Hash, label: "Entry points" },
+                { icon: AlertCircle, label: "Risk analysis" },
+                { icon: BookOpen, label: "Onboarding path" },
+              ].map((topic) => (
+                <button
+                  key={topic.label}
+                  onClick={() => send(topic.label)}
+                  className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors"
+                  style={{
+                    background: "transparent",
+                    color: "var(--rs-text-secondary)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+                    e.currentTarget.style.color = "var(--rs-text-primary)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.color = "var(--rs-text-secondary)";
+                  }}
+                >
+                  <topic.icon
+                    size={11}
+                    style={{ color: "var(--rs-accent)", flexShrink: 0 }}
+                  />
+                  <span style={{ fontSize: 12 }}>{topic.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

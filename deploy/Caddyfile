@@ -1,0 +1,32 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	# Forward everything to the FastAPI container.
+	reverse_proxy backend:8000 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Reasonable body limit for repo uploads (matches MAX_UPLOAD_SIZE_MB=100).
+	request_body {
+		max_size 120MB
+	}
+
+	header {
+		# Security headers
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

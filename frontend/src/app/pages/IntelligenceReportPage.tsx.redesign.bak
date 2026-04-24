@@ -1,0 +1,1424 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import {
+  AlertCircle,
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  Compass,
+  FileCode,
+  Gauge,
+  Layers,
+  Loader2,
+  Sparkles,
+  Target,
+  TrendingUp,
+  Workflow,
+  Zap,
+} from "lucide-react";
+import { useAppStore } from "@/lib/store";
+import {
+  getIntelligenceReport,
+  type IntelligenceReportResponse,
+  type StackItem,
+  type ScoredMetric,
+  type FileRisk,
+  type AntiPattern,
+  type CritiquePoint,
+  type ImprovementItem,
+  type ConfidenceNote as APIConfidenceNote,
+} from "@/lib/api";
+import {
+  Callout,
+  Card,
+  CardHeader,
+  ConfidenceBadge,
+  ConfidenceNote,
+  DotSep,
+  EmptyState,
+  EvidenceBlock,
+  Eyebrow,
+  FadeIn,
+  MetaText,
+  Mono,
+  PageHero,
+  PageShell,
+  Path,
+  ScoreRing,
+  Section,
+  SectionNav,
+  Skeleton,
+  StatStrip,
+  SubSection,
+  Tag,
+} from "../ds";
+import type { Confidence, Severity } from "../ds/tokens";
+
+const NAV_ITEMS = [
+  { id: "identity", label: "What it is" },
+  { id: "stack", label: "Stack" },
+  { id: "architecture", label: "Architecture" },
+  { id: "flow", label: "App flow" },
+  { id: "quality", label: "Quality" },
+  { id: "complexity", label: "Complexity" },
+  { id: "critique", label: "Critique" },
+  { id: "improvements", label: "Improvements" },
+  { id: "confidence", label: "Confidence notes" },
+];
+
+// ── normalisers ────────────────────────────────────────────────────────────
+
+function toConfidence(
+  c: "high" | "medium" | "low" | "unknown" | undefined | null,
+): Confidence {
+  if (c === "high") return "strong";
+  if (c === "medium") return "moderate";
+  if (c === "low") return "weak";
+  return "unknown";
+}
+
+function severityFor(s: string | undefined): Severity {
+  const v = (s ?? "").toLowerCase();
+  if (v === "critical") return "critical";
+  if (v === "high") return "high";
+  if (v === "medium" || v === "moderate") return "medium";
+  if (v === "low") return "low";
+  return "info";
+}
+
+function severityTone(
+  sev: Severity,
+): "danger" | "warn" | "info" | "neutral" | "success" {
+  if (sev === "critical") return "danger";
+  if (sev === "high") return "warn";
+  if (sev === "medium") return "info";
+  if (sev === "low") return "neutral";
+  return "neutral";
+}
+
+function metricLabelTone(label: ScoredMetric["label"]): string {
+  if (label === "excellent") return "var(--rs-conf-deterministic)";
+  if (label === "good") return "var(--rs-conf-strong)";
+  if (label === "fair") return "var(--rs-conf-moderate)";
+  return "var(--rs-conf-weak)";
+}
+
+// ── identity ───────────────────────────────────────────────────────────────
+
+function IdentityBlock({ report }: { report: IntelligenceReportResponse }) {
+  const id = report.identity;
+  return (
+    <Card variant="raised" padding={22}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto",
+          gap: 24,
+          alignItems: "start",
+        }}
+      >
+        <div>
+          <Eyebrow>What this codebase actually is</Eyebrow>
+          <h3
+            style={{
+              margin: "8px 0 6px",
+              fontSize: "var(--rs-text-title)",
+              fontWeight: 600,
+              color: "var(--rs-text-primary)",
+              letterSpacing: "var(--rs-tracking-snug)",
+            }}
+          >
+            {id?.display_name ?? report.project_type ?? "Unknown project"}
+          </h3>
+          <p
+            style={{
+              margin: 0,
+              fontSize: "var(--rs-text-body)",
+              lineHeight: "var(--rs-leading-relaxed)",
+              color: "var(--rs-text-secondary)",
+              maxWidth: "62ch",
+            }}
+          >
+            {id?.description ?? report.summary}
+          </p>
+        </div>
+        {id && (
+          <ConfidenceBadge
+            confidence={toConfidence(id.confidence_level)}
+            rationale={id.confidence_label}
+          />
+        )}
+      </div>
+
+      {id && (
+        <>
+          {id.key_signals?.length > 0 && (
+            <SubSection title="Signals we relied on" style={{ marginTop: 18 }}>
+              <div className="flex items-center gap-2 flex-wrap">
+                {id.key_signals.map((s, i) => (
+                  <Tag key={i} size="sm" tone="info">
+                    {s}
+                  </Tag>
+                ))}
+              </div>
+            </SubSection>
+          )}
+
+          <div
+            style={{
+              marginTop: 16,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: 14,
+            }}
+          >
+            {id.domain_entities?.length > 0 && (
+              <div>
+                <Eyebrow>Domain entities</Eyebrow>
+                <div
+                  className="flex items-center gap-1.5 flex-wrap"
+                  style={{ marginTop: 6 }}
+                >
+                  {id.domain_entities.slice(0, 12).map((e) => (
+                    <Tag key={e} size="sm">
+                      {e}
+                    </Tag>
+                  ))}
+                </div>
+              </div>
+            )}
+            {id.likely_users?.length > 0 && (
+              <div>
+                <Eyebrow>Likely users</Eyebrow>
+                <ul
+                  style={{
+                    margin: "6px 0 0",
+                    paddingLeft: 16,
+                    fontSize: "var(--rs-text-meta)",
+                    lineHeight: "var(--rs-leading-relaxed)",
+                    color: "var(--rs-text-secondary)",
+                  }}
+                >
+                  {id.likely_users.slice(0, 5).map((u, i) => (
+                    <li key={i}>{u}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          {id.alternative_types?.length > 0 && (
+            <SubSection
+              title="Alternative interpretations"
+              description="Other shapes this codebase could plausibly be — ranked lower."
+              style={{ marginTop: 18 }}
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                {id.alternative_types.slice(0, 4).map((alt, i) => (
+                  <span
+                    key={i}
+                    className="flex items-center gap-2"
+                    style={{
+                      padding: "4px 10px",
+                      background: "var(--rs-surface-1)",
+                      border: "1px solid var(--rs-hairline)",
+                      borderRadius: "var(--rs-radius-md)",
+                      fontSize: "var(--rs-text-meta)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                  >
+                    {alt.type}
+                    <span
+                      style={{
+                        color: "var(--rs-text-muted)",
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {Math.round(alt.score * 100)}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </SubSection>
+          )}
+
+          {id.evidence_items?.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <EvidenceBlock
+                items={id.evidence_items.slice(0, 6).map((ev, i) => (
+                  <span key={i}>
+                    <span
+                      style={{
+                        color: "var(--rs-text-primary)",
+                        fontWeight: 500,
+                      }}
+                    >
+                      {ev.description}
+                    </span>
+                    {ev.file_paths?.length > 0 && (
+                      <>
+                        {"  "}
+                        <Mono>{ev.file_paths.slice(0, 2).join(", ")}</Mono>
+                      </>
+                    )}
+                  </span>
+                ))}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+// ── stack ──────────────────────────────────────────────────────────────────
+
+function StackBlock({ stack }: { stack: StackItem[] }) {
+  const grouped = useMemo(() => {
+    const map = new Map<string, StackItem[]>();
+    for (const item of stack) {
+      const key = item.category || "other";
+      const arr = map.get(key) ?? [];
+      arr.push(item);
+      map.set(key, arr);
+    }
+    return Array.from(map.entries());
+  }, [stack]);
+
+  if (stack.length === 0) {
+    return (
+      <EmptyState
+        title="No stack signals"
+        detail="The detector did not surface enough signals to identify the stack."
+      />
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {grouped.map(([cat, items]) => (
+        <div key={cat}>
+          <Eyebrow>{cat}</Eyebrow>
+          <div
+            style={{
+              marginTop: 8,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+              gap: 10,
+            }}
+          >
+            {items.map((item) => (
+              <Card key={item.technology} variant="flat" padding={14}>
+                <CardHeader
+                  title={item.technology}
+                  trailing={
+                    item.confidence_level ? (
+                      <ConfidenceBadge
+                        confidence={toConfidence(item.confidence_level)}
+                      />
+                    ) : undefined
+                  }
+                />
+                {item.notes && (
+                  <p
+                    style={{
+                      margin: "8px 0 0",
+                      fontSize: "var(--rs-text-meta)",
+                      lineHeight: "var(--rs-leading-relaxed)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                  >
+                    {item.notes}
+                  </p>
+                )}
+                {item.evidence_files?.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <EvidenceBlock
+                      items={item.evidence_files.slice(0, 3).map((f, i) => (
+                        <Mono key={i}>{f}</Mono>
+                      ))}
+                    />
+                  </div>
+                )}
+              </Card>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── quality ────────────────────────────────────────────────────────────────
+
+function QualityBlock({
+  quality,
+}: {
+  quality: NonNullable<IntelligenceReportResponse["quality_report"]>;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* overall */}
+      <Card variant="raised" padding={22}>
+        <div className="flex items-center gap-5">
+          <ScoreRing
+            value={quality.overall_score}
+            size={72}
+            stroke={5}
+            label="overall"
+          />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Eyebrow>Overall quality</Eyebrow>
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: "var(--rs-text-title)",
+                fontWeight: 500,
+                color: "var(--rs-text-primary)",
+                letterSpacing: "var(--rs-tracking-snug)",
+              }}
+            >
+              {quality.overall_label}
+            </div>
+            <p
+              style={{
+                margin: "4px 0 0",
+                fontSize: "var(--rs-text-body)",
+                lineHeight: "var(--rs-leading-relaxed)",
+                color: "var(--rs-text-secondary)",
+              }}
+            >
+              Composite of {quality.metrics.length} dimensions, weighted by how
+              much evidence each one had.
+            </p>
+          </div>
+        </div>
+      </Card>
+
+      {/* dimension grid */}
+      {quality.metrics.length > 0 && (
+        <SubSection
+          title="Dimensions"
+          description="Each score is grounded in real files. Hover any to see what fed it."
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+              gap: 12,
+            }}
+          >
+            {quality.metrics.map((m) => (
+              <Card key={m.name} variant="flat" padding={14}>
+                <div className="flex items-start gap-3">
+                  <ScoreRing
+                    value={m.score}
+                    size={48}
+                    stroke={4}
+                    tone={metricLabelTone(m.label)}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: "var(--rs-text-body)",
+                        fontWeight: 500,
+                        color: "var(--rs-text-primary)",
+                        textTransform: "capitalize",
+                      }}
+                    >
+                      {m.name}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "var(--rs-text-eyebrow)",
+                        textTransform: "uppercase",
+                        letterSpacing: "var(--rs-tracking-eyebrow)",
+                        color: metricLabelTone(m.label),
+                        fontWeight: 600,
+                        marginTop: 2,
+                      }}
+                    >
+                      {m.label}
+                    </div>
+                  </div>
+                </div>
+                {m.reasons.length > 0 && (
+                  <ul
+                    style={{
+                      margin: "10px 0 0",
+                      paddingLeft: 16,
+                      fontSize: "var(--rs-text-meta)",
+                      lineHeight: "var(--rs-leading-relaxed)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                  >
+                    {m.reasons.slice(0, 2).map((r, i) => (
+                      <li key={i}>{r}</li>
+                    ))}
+                  </ul>
+                )}
+                {m.caveats.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <ConfidenceNote>{m.caveats[0]}</ConfidenceNote>
+                  </div>
+                )}
+              </Card>
+            ))}
+          </div>
+        </SubSection>
+      )}
+
+      {/* anti-patterns */}
+      {quality.anti_patterns.length > 0 && (
+        <SubSection
+          title="Patterns that fired"
+          description="Recurring code shapes the analyser flagged."
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {quality.anti_patterns.slice(0, 5).map((p) => (
+              <AntiPatternCard key={p.kind + p.title} pattern={p} />
+            ))}
+          </div>
+        </SubSection>
+      )}
+
+      {/* file risks */}
+      {quality.file_risks.length > 0 && (
+        <SubSection
+          title="File risks"
+          description="The files most likely to bite you on a careless edit."
+        >
+          <Card variant="flat" padding={0}>
+            {quality.file_risks.slice(0, 8).map((r, i) => (
+              <FileRiskRow key={r.path} risk={r} first={i === 0} />
+            ))}
+          </Card>
+        </SubSection>
+      )}
+
+      {/* refactor + quick wins */}
+      {(quality.refactor_priorities.length > 0 ||
+        quality.quick_wins.length > 0) && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 12,
+          }}
+        >
+          {quality.refactor_priorities.length > 0 && (
+            <Card variant="flat" padding={16}>
+              <CardHeader
+                title="Refactor priorities"
+                trailing={
+                  <Tag size="sm" tone="warn">
+                    high impact
+                  </Tag>
+                }
+              />
+              <ul
+                style={{
+                  margin: "10px 0 0",
+                  paddingLeft: 16,
+                  fontSize: "var(--rs-text-body)",
+                  lineHeight: "var(--rs-leading-relaxed)",
+                  color: "var(--rs-text-secondary)",
+                }}
+              >
+                {quality.refactor_priorities.slice(0, 5).map((p, i) => (
+                  <li key={i}>{p}</li>
+                ))}
+              </ul>
+            </Card>
+          )}
+          {quality.quick_wins.length > 0 && (
+            <Card variant="flat" padding={16}>
+              <CardHeader
+                title="Quick wins"
+                trailing={
+                  <Tag size="sm" tone="success">
+                    low effort
+                  </Tag>
+                }
+              />
+              <ul
+                style={{
+                  margin: "10px 0 0",
+                  paddingLeft: 16,
+                  fontSize: "var(--rs-text-body)",
+                  lineHeight: "var(--rs-leading-relaxed)",
+                  color: "var(--rs-text-secondary)",
+                }}
+              >
+                {quality.quick_wins.slice(0, 5).map((p, i) => (
+                  <li key={i}>{p}</li>
+                ))}
+              </ul>
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AntiPatternCard({ pattern }: { pattern: AntiPattern }) {
+  const sev = severityFor(pattern.severity);
+  const tone = severityTone(sev);
+  return (
+    <Card
+      variant="feature"
+      tone={tone === "danger" ? "danger" : tone === "warn" ? "warn" : "neutral"}
+      padding={16}
+    >
+      <CardHeader
+        title={pattern.title}
+        meta={pattern.kind}
+        trailing={
+          <Tag size="sm" tone={tone}>
+            {pattern.severity}
+          </Tag>
+        }
+      />
+      <p
+        style={{
+          margin: "10px 0 0",
+          fontSize: "var(--rs-text-body)",
+          lineHeight: "var(--rs-leading-relaxed)",
+          color: "var(--rs-text-secondary)",
+        }}
+      >
+        {pattern.description}
+      </p>
+      {pattern.recommendation && (
+        <div style={{ marginTop: 10 }}>
+          <Callout tone="info" title="Recommendation">
+            {pattern.recommendation}
+          </Callout>
+        </div>
+      )}
+      {pattern.affected_files?.length > 0 && (
+        <div
+          className="flex items-center gap-1.5 flex-wrap"
+          style={{ marginTop: 10 }}
+        >
+          {pattern.affected_files.slice(0, 5).map((f) => (
+            <Path key={f} value={f} />
+          ))}
+          {pattern.affected_files.length > 5 && (
+            <MetaText>+{pattern.affected_files.length - 5} more</MetaText>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function FileRiskRow({ risk, first }: { risk: FileRisk; first: boolean }) {
+  const labelMap: Record<
+    FileRisk["risk_label"],
+    "danger" | "warn" | "info" | "neutral"
+  > = {
+    critical: "danger",
+    high: "warn",
+    moderate: "info",
+    low: "neutral",
+  };
+  return (
+    <div
+      style={{
+        padding: "12px 16px",
+        borderTop: first ? undefined : "1px solid var(--rs-hairline)",
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) auto",
+        gap: 12,
+        alignItems: "center",
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div className="flex items-center gap-2">
+          <Path value={risk.path} />
+          {risk.is_entry_point && (
+            <Tag size="sm" tone="info" icon={<Zap size={9} />}>
+              entry
+            </Tag>
+          )}
+        </div>
+        {risk.reasons?.length > 0 && (
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "var(--rs-text-meta)",
+              lineHeight: "var(--rs-leading-normal)",
+              color: "var(--rs-text-secondary)",
+            }}
+          >
+            {risk.reasons.slice(0, 2).join(" · ")}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-3 shrink-0">
+        <span
+          style={{
+            fontSize: "var(--rs-text-meta)",
+            color: "var(--rs-text-muted)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          fan-in {risk.fan_in} · fan-out {risk.fan_out} · {risk.line_count}L
+        </span>
+        <Tag size="sm" tone={labelMap[risk.risk_label]}>
+          {risk.risk_label}
+        </Tag>
+      </div>
+    </div>
+  );
+}
+
+// ── critique grouping ─────────────────────────────────────────────────────
+
+function CritiqueBlock({ items }: { items: CritiquePoint[] }) {
+  const groups: {
+    key: CritiquePoint["kind"];
+    label: string;
+    tone: "success" | "warn" | "danger" | "info";
+    icon: typeof CheckCircle2;
+  }[] = [
+    {
+      key: "strength",
+      label: "Strengths",
+      tone: "success",
+      icon: CheckCircle2,
+    },
+    { key: "weakness", label: "Weaknesses", tone: "warn", icon: AlertTriangle },
+    { key: "risk", label: "Risks", tone: "danger", icon: AlertCircle },
+    { key: "smell", label: "Code smells", tone: "info", icon: AlertTriangle },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {groups.map((g) => {
+        const subset = items.filter((it) => it.kind === g.key);
+        if (subset.length === 0) return null;
+        const Icon = g.icon;
+        return (
+          <SubSection
+            key={g.key}
+            title={
+              <span className="flex items-center gap-2">
+                <Icon size={13} />
+                <span>{g.label}</span>
+                <span
+                  style={{
+                    fontSize: "var(--rs-text-eyebrow)",
+                    color: "var(--rs-text-muted)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {subset.length}
+                </span>
+              </span>
+            }
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {subset.slice(0, 6).map((c, i) => (
+                <Card key={i} variant="flat" padding={14}>
+                  <CardHeader
+                    title={c.title}
+                    trailing={
+                      c.severity ? (
+                        <Tag size="sm" tone={g.tone}>
+                          {c.severity}
+                        </Tag>
+                      ) : undefined
+                    }
+                  />
+                  <p
+                    style={{
+                      margin: "8px 0 0",
+                      fontSize: "var(--rs-text-body)",
+                      lineHeight: "var(--rs-leading-relaxed)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                  >
+                    {c.detail}
+                  </p>
+                  {c.evidence_files?.length > 0 && (
+                    <div
+                      className="flex items-center gap-1.5 flex-wrap"
+                      style={{ marginTop: 10 }}
+                    >
+                      {c.evidence_files.slice(0, 4).map((f) => (
+                        <Path key={f} value={f} />
+                      ))}
+                    </div>
+                  )}
+                </Card>
+              ))}
+            </div>
+          </SubSection>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── improvements ───────────────────────────────────────────────────────────
+
+function ImprovementsBlock({ items }: { items: ImprovementItem[] }) {
+  const groups: {
+    key: ImprovementItem["effort"];
+    label: string;
+    tone: "success" | "info" | "warn";
+    blurb: string;
+  }[] = [
+    {
+      key: "quick-win",
+      label: "Quick wins",
+      tone: "success",
+      blurb: "Low-effort changes with disproportionate payoff.",
+    },
+    {
+      key: "medium",
+      label: "Medium effort",
+      tone: "info",
+      blurb: "A focused day or two of work each.",
+    },
+    {
+      key: "architectural",
+      label: "Architectural",
+      tone: "warn",
+      blurb: "Larger restructures — plan deliberately.",
+    },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {groups.map((g) => {
+        const subset = items.filter((it) => it.effort === g.key);
+        if (subset.length === 0) return null;
+        return (
+          <SubSection key={g.key} title={g.label} description={g.blurb}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {subset.slice(0, 5).map((it, i) => (
+                <Card key={i} variant="flat" padding={14}>
+                  <CardHeader
+                    title={it.title}
+                    meta={it.category}
+                    trailing={
+                      <Tag size="sm" tone={g.tone}>
+                        {g.key}
+                      </Tag>
+                    }
+                  />
+                  <p
+                    style={{
+                      margin: "8px 0 0",
+                      fontSize: "var(--rs-text-body)",
+                      lineHeight: "var(--rs-leading-relaxed)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                  >
+                    {it.detail}
+                  </p>
+                  {it.evidence_files?.length > 0 && (
+                    <div
+                      className="flex items-center gap-1.5 flex-wrap"
+                      style={{ marginTop: 10 }}
+                    >
+                      {it.evidence_files.slice(0, 4).map((f) => (
+                        <Path key={f} value={f} />
+                      ))}
+                    </div>
+                  )}
+                </Card>
+              ))}
+            </div>
+          </SubSection>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── confidence notes ──────────────────────────────────────────────────────
+
+function ConfidenceNotesBlock({ notes }: { notes: APIConfidenceNote[] }) {
+  if (notes.length === 0) {
+    return (
+      <Callout tone="success" title="No special caveats">
+        The analyser had enough signal to back every claim above.
+      </Callout>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {notes.map((n, i) => (
+        <Card key={i} variant="outline" padding={14}>
+          <div className="flex items-start gap-3">
+            <ConfidenceBadge confidence={toConfidence(n.confidence)} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: "var(--rs-text-body)",
+                  fontWeight: 500,
+                  color: "var(--rs-text-primary)",
+                  marginBottom: 4,
+                }}
+              >
+                {n.claim}
+              </div>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "var(--rs-text-meta)",
+                  lineHeight: "var(--rs-leading-normal)",
+                  color: "var(--rs-text-secondary)",
+                }}
+              >
+                {n.basis}
+              </p>
+            </div>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+// ── page ───────────────────────────────────────────────────────────────────
+
+export function IntelligenceReportPage() {
+  const navigate = useNavigate();
+  const { activeAnalysisId } = useAppStore();
+  const [report, setReport] = useState<IntelligenceReportResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeAnalysisId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    getIntelligenceReport(activeAnalysisId)
+      .then(setReport)
+      .catch(() => setError("Could not load the intelligence report."))
+      .finally(() => setLoading(false));
+  }, [activeAnalysisId]);
+
+  if (!activeAnalysisId) {
+    return (
+      <PageShell width="base">
+        <PageHero
+          eyebrow="Intelligence"
+          title="A senior engineer's take on this codebase"
+          lede="Run an analysis to generate a deep, evidence-backed report — identity, stack, architecture, quality, and what to do next."
+        />
+        <EmptyState
+          icon={<Compass size={16} />}
+          title="No analysis active"
+          detail="Pick or add a repository to generate the intelligence report."
+        />
+      </PageShell>
+    );
+  }
+
+  if (loading) {
+    return (
+      <PageShell width="base">
+        <Skeleton width="40%" height={14} />
+        <Skeleton width="80%" height={28} />
+        <Skeleton width="60%" height={12} />
+        <div
+          className="flex items-center gap-2"
+          style={{ color: "var(--rs-text-muted)" }}
+        >
+          <Loader2 className="animate-spin" size={12} />
+          <MetaText>Composing the intelligence report…</MetaText>
+        </div>
+      </PageShell>
+    );
+  }
+
+  if (error || !report) {
+    return (
+      <PageShell width="base">
+        <PageHero eyebrow="Intelligence" title="We couldn't load the report" />
+        <Callout tone="warn" title="Report unavailable">
+          {error ?? "The intelligence service returned no content."}
+        </Callout>
+      </PageShell>
+    );
+  }
+
+  return (
+    <PageShell width="wide">
+      <PageHero
+        eyebrow="Intelligence · Senior-engineer review"
+        title={
+          report.identity?.display_name
+            ? `What ${report.identity.display_name} actually is`
+            : report.repo_name
+              ? `What ${report.repo_name} actually is`
+              : "What this codebase actually is"
+        }
+        lede={report.summary}
+        meta={
+          <>
+            {report.detected_language && (
+              <>
+                <MetaText>{report.detected_language}</MetaText>
+                <DotSep />
+              </>
+            )}
+            {report.detected_framework && (
+              <>
+                <MetaText>{report.detected_framework}</MetaText>
+                <DotSep />
+              </>
+            )}
+            <MetaText>
+              {report.total_files.toLocaleString()} files ·{" "}
+              {report.total_lines.toLocaleString()} lines
+            </MetaText>
+            <DotSep />
+            <MetaText>
+              {report.total_functions.toLocaleString()} functions ·{" "}
+              {report.total_classes.toLocaleString()} classes
+            </MetaText>
+          </>
+        }
+        actions={
+          <button
+            onClick={() => navigate("/app/insights")}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 11px",
+              fontSize: "var(--rs-text-meta)",
+              fontWeight: 500,
+              color: "var(--rs-text-primary)",
+              background: "var(--rs-surface-2)",
+              border: "1px solid var(--rs-hairline-strong)",
+              borderRadius: "var(--rs-radius-md)",
+            }}
+          >
+            See actionable signals
+            <ArrowRight size={11} />
+          </button>
+        }
+      />
+
+      {report.scores && report.scores.length > 0 && (
+        <StatStrip
+          items={report.scores.slice(0, 4).map((s) => ({
+            label: s.label,
+            value: `${Math.round(s.score)}`,
+            hint: s.rationale,
+          }))}
+        />
+      )}
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) 180px",
+          gap: 32,
+          alignItems: "start",
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 36 }}>
+          <Section
+            id="identity"
+            title="What it is"
+            description="Before any judgment about quality, an honest read on what this codebase is trying to be."
+          >
+            <FadeIn>
+              <IdentityBlock report={report} />
+            </FadeIn>
+          </Section>
+
+          <Section
+            id="stack"
+            title="Stack"
+            description="Technologies the analyser detected, grouped by what they do, with the files that gave them away."
+          >
+            <StackBlock stack={report.stack} />
+          </Section>
+
+          <Section
+            id="architecture"
+            title="Architecture"
+            description="The shape of the system at a glance — major layers and how responsibility is sliced."
+          >
+            <Card variant="flat" padding={20}>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "var(--rs-text-body)",
+                  lineHeight: "var(--rs-leading-relaxed)",
+                  color: "var(--rs-text-secondary)",
+                }}
+              >
+                {report.architecture_overview ||
+                  "The analyser did not produce an architectural overview for this analysis."}
+              </p>
+            </Card>
+            {report.architecture_layers?.length > 0 && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                  gap: 12,
+                }}
+              >
+                {report.architecture_layers.map((layer) => (
+                  <Card key={layer.name} variant="flat" padding={14}>
+                    <CardHeader
+                      title={
+                        <span className="flex items-center gap-2">
+                          <Layers size={12} color="var(--rs-text-muted)" />
+                          <span>{layer.name}</span>
+                        </span>
+                      }
+                    />
+                    <p
+                      style={{
+                        margin: "8px 0 0",
+                        fontSize: "var(--rs-text-meta)",
+                        lineHeight: "var(--rs-leading-relaxed)",
+                        color: "var(--rs-text-secondary)",
+                      }}
+                    >
+                      {layer.description}
+                    </p>
+                    {layer.key_files?.length > 0 && (
+                      <div
+                        className="flex items-center gap-1.5 flex-wrap"
+                        style={{ marginTop: 10 }}
+                      >
+                        {layer.key_files.slice(0, 4).map((f) => (
+                          <Path key={f} value={f} />
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          <Section
+            id="flow"
+            title="App flow"
+            description={
+              report.app_flow_notes ||
+              "How a request travels through the system."
+            }
+          >
+            {report.app_flow.length === 0 ? (
+              <EmptyState
+                title="No flow detected"
+                detail="The analyser couldn't trace a clear execution path from the entry points."
+              />
+            ) : (
+              <Card variant="raised" padding={20}>
+                <ol
+                  style={{
+                    margin: 0,
+                    padding: 0,
+                    listStyle: "none",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 14,
+                  }}
+                >
+                  {report.app_flow.map((step) => (
+                    <li
+                      key={step.step}
+                      className="flex gap-3"
+                      style={{ alignItems: "flex-start" }}
+                    >
+                      <div
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: 11,
+                          background: "var(--rs-surface-2)",
+                          border: "1px solid var(--rs-hairline)",
+                          fontSize: 11,
+                          fontWeight: 500,
+                          color: "var(--rs-text-secondary)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontVariantNumeric: "tabular-nums",
+                          flexShrink: 0,
+                          marginTop: 1,
+                        }}
+                      >
+                        {step.step}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: "var(--rs-text-body)",
+                            lineHeight: "var(--rs-leading-relaxed)",
+                            color: "var(--rs-text-primary)",
+                          }}
+                        >
+                          {step.description}
+                        </p>
+                        <div
+                          className="flex items-center gap-2 flex-wrap"
+                          style={{ marginTop: 6 }}
+                        >
+                          {step.evidence_files?.slice(0, 3).map((f) => (
+                            <Path key={f} value={f} />
+                          ))}
+                          {step.confidence && (
+                            <ConfidenceBadge
+                              confidence={toConfidence(
+                                step.confidence as
+                                  | "high"
+                                  | "medium"
+                                  | "low"
+                                  | "unknown",
+                              )}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </Card>
+            )}
+          </Section>
+
+          <Section
+            id="quality"
+            title="Quality"
+            description="A scored read on engineering health — every dimension links back to the files that informed it."
+          >
+            {report.quality_report ? (
+              <QualityBlock quality={report.quality_report} />
+            ) : report.quality_assessment.length > 0 ? (
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                {report.quality_assessment.map((q, i) => (
+                  <Card key={i} variant="flat" padding={14}>
+                    <CardHeader
+                      title={q.area}
+                      trailing={
+                        <Tag
+                          size="sm"
+                          tone={
+                            q.assessment === "strong"
+                              ? "success"
+                              : q.assessment === "weak"
+                                ? "warn"
+                                : "info"
+                          }
+                        >
+                          {q.assessment}
+                        </Tag>
+                      }
+                    />
+                    <p
+                      style={{
+                        margin: "8px 0 0",
+                        fontSize: "var(--rs-text-body)",
+                        lineHeight: "var(--rs-leading-relaxed)",
+                        color: "var(--rs-text-secondary)",
+                      }}
+                    >
+                      {q.detail}
+                    </p>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No quality signal"
+                detail="The analyser did not produce quality scoring for this run."
+              />
+            )}
+          </Section>
+
+          <Section
+            id="complexity"
+            title="Complexity"
+            description={
+              report.complexity_overview ||
+              "Where complexity concentrates in the codebase."
+            }
+          >
+            {report.complexity_hotspots.length === 0 ? (
+              <Callout tone="success" title="No complexity hotspots">
+                Complexity is distributed evenly enough that nothing stands out.
+              </Callout>
+            ) : (
+              <Card variant="flat" padding={0}>
+                {report.complexity_hotspots.slice(0, 8).map((h, i) => (
+                  <div
+                    key={h.path}
+                    style={{
+                      padding: "12px 16px",
+                      borderTop:
+                        i === 0 ? undefined : "1px solid var(--rs-hairline)",
+                      display: "grid",
+                      gridTemplateColumns: "minmax(0, 1fr) auto",
+                      gap: 12,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <Path value={h.path} />
+                      <p
+                        style={{
+                          margin: "4px 0 0",
+                          fontSize: "var(--rs-text-meta)",
+                          lineHeight: "var(--rs-leading-normal)",
+                          color: "var(--rs-text-secondary)",
+                        }}
+                      >
+                        {h.reason}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span
+                        style={{
+                          fontSize: "var(--rs-text-meta)",
+                          color: "var(--rs-text-muted)",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        in {h.fan_in} · out {h.fan_out}
+                      </span>
+                      <Tag
+                        size="sm"
+                        tone={
+                          h.risk_score >= 0.75
+                            ? "danger"
+                            : h.risk_score >= 0.5
+                              ? "warn"
+                              : "info"
+                        }
+                      >
+                        {Math.round(h.risk_score * 100)}
+                      </Tag>
+                    </div>
+                  </div>
+                ))}
+              </Card>
+            )}
+            {report.optimization_notes && (
+              <Callout
+                tone="info"
+                icon={<TrendingUp size={14} />}
+                title="Optimisation notes"
+              >
+                {report.optimization_notes}
+              </Callout>
+            )}
+          </Section>
+
+          <Section
+            id="critique"
+            title="Critique"
+            description="What's strong, what's weak, and what's quietly putting the system at risk — the kind of review you'd get from a staff engineer."
+          >
+            {report.critique.length === 0 ? (
+              <EmptyState
+                title="No critique surfaced"
+                detail="The analyser did not produce critique items for this run."
+              />
+            ) : (
+              <CritiqueBlock items={report.critique} />
+            )}
+          </Section>
+
+          <Section
+            id="improvements"
+            title="Improvements"
+            description="Concrete, ordered work — sized by effort so you can pick the right thing for today."
+          >
+            {report.improvements.length === 0 ? (
+              <EmptyState
+                title="No improvements suggested"
+                detail="Either the analyser didn't surface candidates, or the codebase is already in a good state."
+              />
+            ) : (
+              <ImprovementsBlock items={report.improvements} />
+            )}
+          </Section>
+
+          <Section
+            id="confidence"
+            title="Confidence notes"
+            description="Where the report is most and least sure of itself, and why."
+          >
+            <ConfidenceNotesBlock notes={report.confidence_notes} />
+          </Section>
+
+          {/* footer next-steps */}
+          <Section title="Take it further">
+            <Card variant="raised" padding={16}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Tag
+                  onClick={() => navigate("/app/insights")}
+                  icon={<Sparkles size={11} />}
+                >
+                  Open Insights
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/risk")}
+                  icon={<AlertTriangle size={11} />}
+                >
+                  Risk Areas
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/impact")}
+                  icon={<Target size={11} />}
+                >
+                  Impact analysis
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/graph")}
+                  icon={<Workflow size={11} />}
+                >
+                  Dependency graph
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/files")}
+                  icon={<FileCode size={11} />}
+                >
+                  Browse files
+                </Tag>
+                <Tag
+                  onClick={() => navigate("/app/ai")}
+                  icon={<Gauge size={11} />}
+                >
+                  Ask the AI
+                </Tag>
+              </div>
+            </Card>
+          </Section>
+        </div>
+
+        <div className="hidden lg:block">
+          <SectionNav items={NAV_ITEMS} />
+        </div>
+      </div>
+    </PageShell>
+  );
+}

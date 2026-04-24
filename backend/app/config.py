@@ -8,9 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(Path(__file__).resolve().parents[2] / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # ── App ──
@@ -40,8 +41,15 @@ class Settings(BaseSettings):
     # ── GitHub ──
     github_token: str = ""
 
+    # ── GitHub OAuth App (optional — enables real "Sign in with GitHub") ──
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    github_oauth_redirect_uri: str = "http://localhost:8000/api/auth/github/callback"
+    frontend_url: str = "http://localhost:5173"
+
     # ── AI / LLM ──
     openai_api_key: str = ""
+    openai_base_url: str = ""
     openai_model: str = "gpt-4o"
     embedding_model: str = "text-embedding-3-small"
 

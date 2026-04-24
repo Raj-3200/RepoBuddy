@@ -19,7 +19,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDPrimaryKeyMixin
 
-
 # ────────────────────────── Enums ──────────────────────────
 
 
@@ -70,17 +69,24 @@ class Repository(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "repositories"
 
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    source: Mapped[RepositorySource] = mapped_column(Enum(RepositorySource), nullable=False)
+    source: Mapped[RepositorySource] = mapped_column(
+        Enum(RepositorySource, native_enum=False), nullable=False
+    )
     url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     local_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     default_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     detected_language: Mapped[str | None] = mapped_column(String(50), nullable=True)
     detected_framework: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    owner_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 
     # Relationships
-    analyses: Mapped[list[Analysis]] = relationship(back_populates="repository", cascade="all, delete-orphan")
-    files: Mapped[list[RepoFile]] = relationship(back_populates="repository", cascade="all, delete-orphan")
+    analyses: Mapped[list[Analysis]] = relationship(
+        back_populates="repository", cascade="all, delete-orphan"
+    )
+    files: Mapped[list[RepoFile]] = relationship(
+        back_populates="repository", cascade="all, delete-orphan"
+    )
 
 
 # ────────────────────────── Analysis ──────────────────────────
@@ -90,10 +96,13 @@ class Analysis(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "analyses"
 
     repository_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     status: Mapped[AnalysisStatus] = mapped_column(
-        Enum(AnalysisStatus), nullable=False, default=AnalysisStatus.PENDING
+        Enum(AnalysisStatus, native_enum=False), nullable=False, default=AnalysisStatus.PENDING
     )
     current_step: Mapped[str | None] = mapped_column(String(255), nullable=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
@@ -110,9 +119,15 @@ class Analysis(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     # Relationships
     repository: Mapped[Repository] = relationship(back_populates="analyses")
-    symbols: Mapped[list[Symbol]] = relationship(back_populates="analysis", cascade="all, delete-orphan")
-    edges: Mapped[list[DependencyEdge]] = relationship(back_populates="analysis", cascade="all, delete-orphan")
-    insights: Mapped[list[Insight]] = relationship(back_populates="analysis", cascade="all, delete-orphan")
+    symbols: Mapped[list[Symbol]] = relationship(
+        back_populates="analysis", cascade="all, delete-orphan"
+    )
+    edges: Mapped[list[DependencyEdge]] = relationship(
+        back_populates="analysis", cascade="all, delete-orphan"
+    )
+    insights: Mapped[list[Insight]] = relationship(
+        back_populates="analysis", cascade="all, delete-orphan"
+    )
 
 
 # ────────────────────────── RepoFile ──────────────────────────
@@ -122,7 +137,10 @@ class RepoFile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "repo_files"
 
     repository_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     path: Mapped[str] = mapped_column(String(2048), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -144,11 +162,16 @@ class Symbol(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "symbols"
 
     analysis_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     file_path: Mapped[str] = mapped_column(String(2048), nullable=False)
     name: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
-    symbol_type: Mapped[SymbolType] = mapped_column(Enum(SymbolType), nullable=False)
+    symbol_type: Mapped[SymbolType] = mapped_column(
+        Enum(SymbolType, native_enum=False), nullable=False
+    )
     line_start: Mapped[int] = mapped_column(Integer, nullable=False)
     line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     signature: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -166,11 +189,14 @@ class DependencyEdge(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "dependency_edges"
 
     analysis_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     source_path: Mapped[str] = mapped_column(String(2048), nullable=False)
     target_path: Mapped[str] = mapped_column(String(2048), nullable=False)
-    edge_type: Mapped[EdgeType] = mapped_column(Enum(EdgeType), nullable=False)
+    edge_type: Mapped[EdgeType] = mapped_column(Enum(EdgeType, native_enum=False), nullable=False)
     source_symbol: Mapped[str | None] = mapped_column(String(512), nullable=True)
     target_symbol: Mapped[str | None] = mapped_column(String(512), nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -185,7 +211,10 @@ class Insight(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "insights"
 
     analysis_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     category: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     severity: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -204,7 +233,10 @@ class SemanticChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "semantic_chunks"
 
     analysis_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analyses.id", ondelete="CASCADE"), nullable=False, index=True
+        UUID(as_uuid=True),
+        ForeignKey("analyses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     file_path: Mapped[str] = mapped_column(String(2048), nullable=False)
     chunk_type: Mapped[str] = mapped_column(String(50), nullable=False)

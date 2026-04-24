@@ -80,6 +80,73 @@ RepoBuddy/
 └── docker-compose.yml
 ```
 
+## Key Endpoints
+
+RepoBuddy's public REST surface is evidence-first — every major response
+includes the file paths, symbols, and metrics backing the claim.
+
+| Endpoint                         | Method | Purpose                                                                                   |
+| -------------------------------- | ------ | ----------------------------------------------------------------------------------------- |
+| `/api/repos/github`              | POST   | Clone a GitHub repo (optional PAT for private). Classifies failures, no silent retries.   |
+| `/api/repos/upload`              | POST   | Upload a ZIP and analyze it.                                                              |
+| `/api/analyses/{id}`             | GET    | Analysis status + progress.                                                               |
+| `/api/graph/{id}`                | GET    | Full dependency graph (nodes, edges, modules, cycles, hotspots).                          |
+| `/api/graph/{id}/modules`        | GET    | Module-level intelligence (cohesion, fan-in/out, entry points).                           |
+| `/api/files/{id}`                | GET    | File list with risk scores and metadata.                                                  |
+| `/api/intelligence/{id}`         | GET    | Repository Intelligence Report: stack, identity, quality report, critique, improvements.  |
+| `/api/impact/{id}?file_path=...` | GET    | Change Impact + Review Path — blast radius, affected modules, entry points, review order. |
+| `/api/insights/{id}`             | GET    | Structured insights (patterns, risks, opportunities) with evidence.                       |
+| `/api/ai/chat`                   | POST   | Grounded Q&A over the analyzed repo.                                                      |
+
+## Design Principles
+
+- **Evidence over opinion.** Every claim is paired with file paths, line
+  ranges, symbols, or graph metrics. No "high confidence" without support.
+- **Deterministic core, AI at the edges.** Graph, quality, impact and
+  identity analysis are pure Python over the parsed AST / dependency graph.
+  LLMs only phrase what the analyzers already proved.
+- **Conservative labels.** Risk, confidence and severity labels are biased
+  downward when supporting evidence is thin.
+
+## Deployment
+
+RepoBuddy ships as a single `docker compose` stack. For a production deploy:
+
+1. **Copy and edit env**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Set at minimum:
+   - `APP_ENV=production`
+   - `APP_DEBUG=false`
+   - `APP_SECRET_KEY=<a long random string>`
+   - `CORS_ORIGINS=https://your.domain` (no `localhost`)
+   - Strong DB credentials in `DATABASE_URL` / `DATABASE_URL_SYNC`
+   - `OPENAI_API_KEY` only if you want the AI features enabled
+
+2. **Bring the stack up**
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+   All five services (`postgres`, `redis`, `backend`, `celery-worker`, `frontend`) have healthchecks. `docker compose ps` should show every service as `healthy` within ~30s.
+
+3. **Run migrations** (first deploy and after schema changes)
+
+   ```bash
+   docker compose exec backend alembic upgrade head
+   ```
+
+4. **Verify**
+   - `GET http://<host>:8000/health` → `{"status":"healthy"}`
+   - `GET http://<host>:3000/` → SPA loads; response includes `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and `Cache-Control: no-store` on `index.html`.
+   - In production mode `/docs` and `/redoc` are disabled.
+
+On startup, the backend logs `production_misconfig` warnings if `APP_DEBUG`, `APP_SECRET_KEY`, or `CORS_ORIGINS` still hold development defaults — check the first seconds of `docker compose logs backend` after any config change.
+
 ## License
 
 MIT

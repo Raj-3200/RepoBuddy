@@ -1,0 +1,326 @@
+import { useState, useCallback } from "react";
+import { useNavigate } from "react-router";
+import { motion } from "motion/react";
+import {
+  Upload as UploadIcon,
+  Github,
+  FileArchive,
+  ArrowRight,
+  AlertCircle,
+  Lock,
+} from "lucide-react";
+import { createRepository, uploadRepository } from "@/lib/api";
+import { useAppStore } from "@/lib/store";
+
+export function Upload() {
+  const navigate = useNavigate();
+  const { setActiveRepo } = useAppStore();
+  const [mode, setMode] = useState<"github" | "upload">("github");
+  const [url, setUrl] = useState("");
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [token, setToken] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleGithub = async () => {
+    if (!url.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const name = url
+        .replace(/^https?:\/\/github\.com\//, "")
+        .replace(/\.git$/, "")
+        .replace(/\/$/, "");
+      const repo = await createRepository({
+        name,
+        url: url.trim(),
+        access_token: isPrivate && token.trim() ? token.trim() : undefined,
+      });
+      setActiveRepo(repo.id);
+      navigate("/app/progress");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create repository");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFile = async (file: File) => {
+    if (!file.name.endsWith(".zip")) {
+      setError("Please upload a .zip file");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const repo = await uploadRepository(file);
+      setActiveRepo(repo.id);
+      navigate("/app/progress");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  }, []);
+
+  return (
+    <div
+      className="h-full overflow-y-auto flex items-center justify-center"
+      style={{ background: "var(--rs-base)" }}
+    >
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+        className="w-full max-w-lg px-6"
+      >
+        <div className="text-center mb-8">
+          <h1
+            style={{
+              fontSize: 22,
+              fontWeight: 600,
+              letterSpacing: "-0.025em",
+              color: "var(--rs-text-primary)",
+              marginBottom: 6,
+            }}
+          >
+            Add a Repository
+          </h1>
+          <p style={{ fontSize: 14, color: "var(--rs-text-muted)" }}>
+            Connect a GitHub repo or upload a ZIP to start analysis
+          </p>
+        </div>
+
+        {/* Mode toggle */}
+        <div
+          className="flex rounded-xl p-1.5 mb-6"
+          style={{
+            background: "var(--rs-surface-1)",
+            border: "1px solid var(--rs-border)",
+          }}
+        >
+          {[
+            { key: "github" as const, label: "GitHub URL", icon: Github },
+            { key: "upload" as const, label: "Upload ZIP", icon: FileArchive },
+          ].map((m) => (
+            <button
+              key={m.key}
+              onClick={() => setMode(m.key)}
+              className="flex-1 flex items-center justify-center gap-2 rounded-lg py-2.5 transition-all"
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                background:
+                  mode === m.key ? "var(--rs-surface-3)" : "transparent",
+                color:
+                  mode === m.key
+                    ? "var(--rs-text-primary)"
+                    : "var(--rs-text-muted)",
+                border:
+                  mode === m.key
+                    ? "1px solid var(--rs-border-strong)"
+                    : "1px solid transparent",
+              }}
+            >
+              <m.icon size={14} />
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {error && (
+          <div
+            className="flex items-center gap-2 rounded-xl px-4 py-3 mb-4"
+            style={{
+              background: "var(--rs-red-dim)",
+              border: "1px solid rgba(242,83,83,0.2)",
+              color: "var(--rs-red)",
+              fontSize: 13,
+            }}
+          >
+            <AlertCircle size={14} />
+            {error}
+          </div>
+        )}
+
+        {mode === "github" ? (
+          <div className="flex flex-col gap-4">
+            <div
+              className="rounded-xl overflow-hidden"
+              style={{
+                background: "var(--rs-surface-1)",
+                border: "1px solid var(--rs-border)",
+              }}
+            >
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo"
+                style={{
+                  width: "100%",
+                  background: "transparent",
+                  border: "none",
+                  outline: "none",
+                  padding: "14px 16px",
+                  fontSize: 14,
+                  color: "var(--rs-text-primary)",
+                }}
+                onKeyDown={(e) => e.key === "Enter" && handleGithub()}
+              />
+            </div>
+
+            {/* Private repo toggle */}
+            <button
+              type="button"
+              onClick={() => setIsPrivate((v) => !v)}
+              className="flex items-center gap-2 self-start"
+              style={{
+                fontSize: 12,
+                color: isPrivate
+                  ? "var(--rs-text-primary)"
+                  : "var(--rs-text-muted)",
+                background: "transparent",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              <Lock size={12} />
+              {isPrivate
+                ? "Private repo — token required"
+                : "Private repo? Add access token"}
+            </button>
+
+            {isPrivate && (
+              <div
+                className="rounded-xl overflow-hidden"
+                style={{
+                  background: "var(--rs-surface-1)",
+                  border: "1px solid var(--rs-border)",
+                }}
+              >
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  placeholder="GitHub personal access token (repo scope)"
+                  style={{
+                    width: "100%",
+                    background: "transparent",
+                    border: "none",
+                    outline: "none",
+                    padding: "12px 16px",
+                    fontSize: 13,
+                    fontFamily:
+                      "ui-monospace, SFMono-Regular, Menlo, monospace",
+                    color: "var(--rs-text-primary)",
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && handleGithub()}
+                />
+              </div>
+            )}
+            {isPrivate && (
+              <p
+                style={{
+                  fontSize: 11,
+                  color: "var(--rs-text-muted)",
+                  marginTop: -6,
+                }}
+              >
+                Token is used only for this clone and is not stored.
+              </p>
+            )}
+
+            <button
+              onClick={handleGithub}
+              disabled={loading || !url.trim() || (isPrivate && !token.trim())}
+              className="flex items-center justify-center gap-2 rounded-xl py-3 transition-all"
+              style={{
+                fontSize: 14,
+                fontWeight: 500,
+                background:
+                  url.trim() && !loading && (!isPrivate || token.trim())
+                    ? "var(--rs-accent)"
+                    : "var(--rs-surface-2)",
+                color:
+                  url.trim() && !loading && (!isPrivate || token.trim())
+                    ? "white"
+                    : "var(--rs-text-muted)",
+                border: "none",
+                boxShadow:
+                  url.trim() && !loading && (!isPrivate || token.trim())
+                    ? "0 4px 20px rgba(124,108,245,0.3)"
+                    : "none",
+                opacity: loading ? 0.7 : 1,
+              }}
+            >
+              {loading ? "Connecting…" : "Analyze Repository"}
+              {!loading && <ArrowRight size={14} />}
+            </button>
+          </div>
+        ) : (
+          <div
+            className="rounded-xl p-8 text-center transition-all cursor-pointer"
+            style={{
+              background: dragging
+                ? "rgba(124,108,245,0.08)"
+                : "var(--rs-surface-1)",
+              border: `2px dashed ${dragging ? "var(--rs-accent)" : "var(--rs-border)"}`,
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}
+            onClick={() => {
+              const input = document.createElement("input");
+              input.type = "file";
+              input.accept = ".zip";
+              input.onchange = () => {
+                if (input.files?.[0]) handleFile(input.files[0]);
+              };
+              input.click();
+            }}
+          >
+            <div
+              className="mx-auto rounded-2xl flex items-center justify-center mb-4"
+              style={{
+                width: 56,
+                height: 56,
+                background: "rgba(124,108,245,0.1)",
+                border: "1px solid rgba(124,108,245,0.2)",
+              }}
+            >
+              <UploadIcon size={22} style={{ color: "var(--rs-accent)" }} />
+            </div>
+            <p
+              style={{
+                fontSize: 14,
+                fontWeight: 500,
+                color: "var(--rs-text-primary)",
+                marginBottom: 4,
+              }}
+            >
+              {loading
+                ? "Uploading…"
+                : "Drop a ZIP file here, or click to browse"}
+            </p>
+            <p style={{ fontSize: 12, color: "var(--rs-text-muted)" }}>
+              Max 100MB · JavaScript and TypeScript projects
+            </p>
+          </div>
+        )}
+      </motion.div>
+    </div>
+  );
+}

@@ -51,3 +51,13 @@ class ChatResponse(BaseModel):
     message: str
     citations: list[Citation] = []
     suggested_questions: list[str] = []
+
+    # Structured answer sections. Populated when the model returns JSON;
+    # otherwise left empty and `message` holds the fallback text.
+    direct_answer: str | None = None
+    explanation: str | None = None
+    related_files: list[str] = []
+    confidence: str | None = None  # strong | moderate | weak | unknown
+    confidence_rationale: str | None = None
+    limitations: list[str] = []
+    grounded: bool = True  # did the model claim to rely on evidence

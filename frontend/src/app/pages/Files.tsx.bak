@@ -1,0 +1,927 @@
+import { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  ChevronRight,
+  ChevronDown,
+  FileCode,
+  Folder,
+  FolderOpen,
+  Search,
+  ArrowUpRight,
+  Sparkles,
+  GitBranch,
+  AlertTriangle,
+  Link,
+  Package,
+  ExternalLink,
+  Copy,
+  Hash,
+  Loader2,
+} from "lucide-react";
+import { useAppStore } from "@/lib/store";
+import {
+  getFileTree,
+  getFileDetail,
+  type FileTreeNode as APIFileTreeNode,
+  type FileDetail as APIFileDetail,
+} from "@/lib/api";
+
+interface FileNode {
+  name: string;
+  path: string;
+  type: "file" | "dir";
+  children?: FileNode[];
+  ext?: string;
+  size?: number;
+  risk?: "high" | "medium" | "low";
+  id?: string;
+}
+
+interface FileDetailData {
+  summary: string;
+  imports: string[];
+  exports: string[];
+  symbols: { name: string; kind: "function" | "class" | "const" | "type" }[];
+  deps: string[];
+  dependents: string[];
+  lines: number;
+  complexity: number;
+}
+
+function convertApiTree(nodes: APIFileTreeNode[]): FileNode[] {
+  return nodes.map((n) => ({
+    name: n.name,
+    path: n.path,
+    type: n.is_directory ? ("dir" as const) : ("file" as const),
+    ext: n.extension ?? undefined,
+    size: n.size_bytes ?? undefined,
+    id: n.id,
+    children: n.children ? convertApiTree(n.children) : undefined,
+  }));
+}
+
+function convertApiDetail(d: APIFileDetail): FileDetailData {
+  return {
+    summary: d.summary ?? "No summary available.",
+    imports: d.imports ?? [],
+    exports: d.exports ?? [],
+    symbols: (d.functions ?? []).map((f: any) => ({
+      name: f.name ?? f,
+      kind: "function" as const,
+    })),
+    deps: d.dependencies ?? [],
+    dependents: d.dependents ?? [],
+    lines: d.line_count ?? 0,
+    complexity: d.complexity ?? 0,
+  };
+}
+
+const riskColors: Record<string, string> = {
+  high: "var(--rs-red)",
+  medium: "var(--rs-amber)",
+  low: "var(--rs-green)",
+};
+
+const kindColors: Record<string, string> = {
+  function: "var(--rs-blue)",
+  class: "var(--rs-accent)",
+  const: "var(--rs-green)",
+  type: "var(--rs-amber)",
+};
+
+function FileTreeItem({
+  node,
+  depth,
+  selectedPath,
+  onSelect,
+}: {
+  node: FileNode;
+  depth: number;
+  selectedPath: string | null;
+  onSelect: (path: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(depth < 1);
+
+  if (node.type === "dir") {
+    return (
+      <div>
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="w-full flex items-center gap-1.5 rounded px-2 py-1 transition-colors text-left"
+          style={{
+            paddingLeft: 8 + depth * 14,
+            fontSize: 12,
+            color: "var(--rs-text-secondary)",
+            background: "transparent",
+          }}
+          onMouseEnter={(e) =>
+            (e.currentTarget.style.background = "rgba(255,255,255,0.04)")
+          }
+          onMouseLeave={(e) =>
+            (e.currentTarget.style.background = "transparent")
+          }
+        >
+          {expanded ? (
+            <ChevronDown size={10} style={{ flexShrink: 0 }} />
+          ) : (
+            <ChevronRight size={10} style={{ flexShrink: 0 }} />
+          )}
+          {expanded ? (
+            <FolderOpen
+              size={12}
+              style={{ color: "var(--rs-amber)", flexShrink: 0 }}
+            />
+          ) : (
+            <Folder
+              size={12}
+              style={{ color: "var(--rs-amber)", flexShrink: 0 }}
+            />
+          )}
+          <span>{node.name}</span>
+        </button>
+        <AnimatePresence>
+          {expanded && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+              style={{ overflow: "hidden" }}
+            >
+              {node.children?.map((child) => (
+                <FileTreeItem
+                  key={child.path}
+                  node={child}
+                  depth={depth + 1}
+                  selectedPath={selectedPath}
+                  onSelect={onSelect}
+                />
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    );
+  }
+
+  const isSelected = selectedPath === node.path;
+
+  return (
+    <button
+      onClick={() => onSelect(node.path)}
+      className="w-full flex items-center gap-1.5 rounded px-2 py-1 transition-colors text-left"
+      style={{
+        paddingLeft: 8 + depth * 14,
+        fontSize: 12,
+        color: isSelected
+          ? "var(--rs-text-primary)"
+          : "var(--rs-text-secondary)",
+        background: isSelected ? "rgba(124,108,245,0.1)" : "transparent",
+        border: "none",
+      }}
+      onMouseEnter={(e) => {
+        if (!isSelected)
+          e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+      }}
+      onMouseLeave={(e) => {
+        if (!isSelected) e.currentTarget.style.background = "transparent";
+      }}
+    >
+      <span style={{ width: 10, flexShrink: 0 }} />
+      <FileCode
+        size={12}
+        style={{
+          color: isSelected ? "var(--rs-accent)" : "var(--rs-text-muted)",
+          flexShrink: 0,
+        }}
+      />
+      <span
+        className="flex-1 overflow-hidden"
+        style={{
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {node.name}
+      </span>
+      {node.risk && (
+        <div
+          className="rounded-full shrink-0"
+          style={{ width: 5, height: 5, background: riskColors[node.risk] }}
+        />
+      )}
+    </button>
+  );
+}
+
+function findNodeByPath(nodes: FileNode[], path: string): FileNode | undefined {
+  for (const n of nodes) {
+    if (n.path === path) return n;
+    if (n.children) {
+      const found = findNodeByPath(n.children, path);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+export function Files() {
+  const { activeRepoId } = useAppStore();
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [tree, setTree] = useState<FileNode[]>([]);
+  const [detail, setDetail] = useState<FileDetailData | null>(null);
+  const [loadingTree, setLoadingTree] = useState(true);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeRepoId) {
+      setLoadingTree(false);
+      return;
+    }
+    setSelectedFile(null);
+    setDetail(null);
+    setSelectedId(null);
+    setLoadingTree(true);
+    getFileTree(activeRepoId)
+      .then((nodes) => setTree(convertApiTree(nodes)))
+      .catch(() => {})
+      .finally(() => setLoadingTree(false));
+  }, [activeRepoId]);
+
+  const handleSelectFile = (path: string, id?: string) => {
+    setSelectedFile(path);
+    setDetail(null);
+    if (id) {
+      setSelectedId(id);
+      setLoadingDetail(true);
+      getFileDetail(id)
+        .then((d) => setDetail(convertApiDetail(d)))
+        .catch(() => {})
+        .finally(() => setLoadingDetail(false));
+    }
+  };
+
+  const fileCount = countFiles(tree);
+
+  function countFiles(nodes: FileNode[]): number {
+    return nodes.reduce(
+      (acc, n) =>
+        acc +
+        (n.type === "file" ? 1 : 0) +
+        (n.children ? countFiles(n.children) : 0),
+      0,
+    );
+  }
+
+  function filterTree(nodes: FileNode[], query: string): FileNode[] {
+    if (!query.trim()) return nodes;
+    const q = query.toLowerCase();
+    return nodes.reduce<FileNode[]>((acc, node) => {
+      if (node.type === "file") {
+        if (
+          node.name.toLowerCase().includes(q) ||
+          node.path.toLowerCase().includes(q)
+        ) {
+          acc.push(node);
+        }
+      } else {
+        const filteredChildren = filterTree(node.children ?? [], query);
+        if (filteredChildren.length > 0) {
+          acc.push({ ...node, children: filteredChildren });
+        }
+      }
+      return acc;
+    }, []);
+  }
+
+  const filteredTree = filterTree(tree, search);
+
+  return (
+    <div className="flex h-full" style={{ background: "var(--rs-base)" }}>
+      {/* File tree panel */}
+      <div
+        className="flex flex-col shrink-0"
+        style={{
+          width: 240,
+          borderRight: "1px solid var(--rs-border)",
+          background: "var(--rs-sidebar)",
+        }}
+      >
+        {/* Search */}
+        <div
+          className="p-3"
+          style={{ borderBottom: "1px solid var(--rs-border)" }}
+        >
+          <div
+            className="flex items-center gap-2 rounded-lg px-3"
+            style={{
+              height: 30,
+              background: "var(--rs-surface-2)",
+              border: "1px solid var(--rs-border)",
+            }}
+          >
+            <Search size={11} style={{ color: "var(--rs-text-muted)" }} />
+            <input
+              placeholder="Filter files…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              style={{
+                background: "transparent",
+                border: "none",
+                outline: "none",
+                fontSize: 11,
+                color: "var(--rs-text-primary)",
+                flex: 1,
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div
+          className="flex items-center gap-4 px-4 py-2.5"
+          style={{ borderBottom: "1px solid var(--rs-border)" }}
+        >
+          <span style={{ fontSize: 10, color: "var(--rs-text-muted)" }}>
+            {fileCount} files
+          </span>
+          {search && (
+            <span style={{ fontSize: 10, color: "var(--rs-accent)" }}>
+              {countFiles(filteredTree)} matching
+            </span>
+          )}
+        </div>
+
+        {/* Tree */}
+        <div className="flex-1 overflow-y-auto py-2 px-2">
+          {loadingTree ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2
+                size={18}
+                style={{
+                  color: "var(--rs-accent)",
+                  animation: "spin 1s linear infinite",
+                }}
+              />
+            </div>
+          ) : filteredTree.length === 0 ? (
+            <div
+              className="text-center py-8"
+              style={{ fontSize: 11, color: "var(--rs-text-muted)" }}
+            >
+              {search ? "No files match your filter" : "No files found"}
+            </div>
+          ) : (
+            filteredTree.map((node) => (
+              <FileTreeItem
+                key={node.path}
+                node={node}
+                depth={0}
+                selectedPath={selectedFile}
+                onSelect={(path) => {
+                  const found = findNodeByPath(tree, path);
+                  handleSelectFile(path, found?.id);
+                }}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* File detail */}
+      <div className="flex-1 overflow-y-auto">
+        <AnimatePresence mode="wait">
+          {!selectedFile ? (
+            <motion.div
+              key="empty"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center justify-center h-full gap-4"
+            >
+              <div
+                className="rounded-2xl flex items-center justify-center"
+                style={{
+                  width: 56,
+                  height: 56,
+                  background: "var(--rs-surface-2)",
+                  border: "1px solid var(--rs-border)",
+                }}
+              >
+                <FileCode size={24} style={{ color: "var(--rs-text-muted)" }} />
+              </div>
+              <div className="text-center">
+                <p
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 500,
+                    color: "var(--rs-text-primary)",
+                    marginBottom: 6,
+                  }}
+                >
+                  Select a file to inspect
+                </p>
+                <p style={{ fontSize: 13, color: "var(--rs-text-muted)" }}>
+                  Navigate the tree to explore file intelligence
+                </p>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key={selectedFile}
+              initial={{ opacity: 0, x: 8 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -8 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="px-8 py-7 max-w-3xl"
+            >
+              {/* File header */}
+              <div className="flex items-start justify-between mb-6">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <FileCode size={16} style={{ color: "var(--rs-accent)" }} />
+                    <h1
+                      style={{
+                        fontSize: 18,
+                        fontWeight: 600,
+                        color: "var(--rs-text-primary)",
+                        letterSpacing: "-0.02em",
+                        fontFamily: "monospace",
+                      }}
+                    >
+                      {selectedFile.split("/").pop()}
+                    </h1>
+                    {detail && detail.complexity > 20 && (
+                      <span
+                        className="rounded-full px-2.5 py-0.5"
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 500,
+                          background:
+                            detail.complexity > 30
+                              ? "var(--rs-red-dim)"
+                              : "var(--rs-amber-dim)",
+                          color:
+                            detail.complexity > 30
+                              ? "var(--rs-red)"
+                              : "var(--rs-amber)",
+                          border: `1px solid ${detail.complexity > 30 ? "rgba(242,83,83,0.2)" : "rgba(245,160,81,0.2)"}`,
+                        }}
+                      >
+                        {detail.complexity > 30 ? "High Risk" : "Medium Risk"}
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: "var(--rs-text-muted)",
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {selectedFile}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="flex items-center gap-1.5 rounded-lg px-3 transition-all"
+                    style={{
+                      height: 30,
+                      fontSize: 11,
+                      fontWeight: 500,
+                      background: "rgba(124,108,245,0.1)",
+                      color: "var(--rs-accent)",
+                      border: "1px solid rgba(124,108,245,0.2)",
+                    }}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.background =
+                        "rgba(124,108,245,0.18)")
+                    }
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.background =
+                        "rgba(124,108,245,0.1)")
+                    }
+                  >
+                    <Sparkles size={10} />
+                    Ask AI
+                  </button>
+                  <button
+                    className="flex items-center gap-1.5 rounded-lg px-3 transition-all"
+                    style={{
+                      height: 30,
+                      fontSize: 11,
+                      fontWeight: 500,
+                      background: "var(--rs-surface-2)",
+                      color: "var(--rs-text-secondary)",
+                      border: "1px solid var(--rs-border)",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor =
+                        "var(--rs-border-strong)";
+                      e.currentTarget.style.color = "var(--rs-text-primary)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = "var(--rs-border)";
+                      e.currentTarget.style.color = "var(--rs-text-secondary)";
+                    }}
+                  >
+                    <GitBranch size={10} />
+                    View in Graph
+                  </button>
+                </div>
+              </div>
+
+              {loadingDetail ? (
+                <div className="flex items-center justify-center py-16">
+                  <Loader2
+                    size={20}
+                    style={{
+                      color: "var(--rs-accent)",
+                      animation: "spin 1s linear infinite",
+                    }}
+                  />
+                </div>
+              ) : detail ? (
+                <div className="flex flex-col gap-5">
+                  {/* File stats strip */}
+                  <div
+                    className="flex items-center gap-6 rounded-xl px-5 py-3"
+                    style={{
+                      background: "var(--rs-surface-1)",
+                      border: "1px solid var(--rs-border)",
+                    }}
+                  >
+                    {[
+                      { label: "Lines", value: detail.lines.toString() },
+                      {
+                        label: "Complexity",
+                        value: detail.complexity.toString(),
+                      },
+                      {
+                        label: "Imports",
+                        value: detail.imports.length.toString(),
+                      },
+                      {
+                        label: "Exports",
+                        value: detail.exports.length.toString(),
+                      },
+                      {
+                        label: "Dependents",
+                        value: detail.dependents.length.toString(),
+                      },
+                    ].map((stat) => (
+                      <div key={stat.label}>
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: "var(--rs-text-muted)",
+                            marginBottom: 2,
+                            fontWeight: 500,
+                          }}
+                        >
+                          {stat.label}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 16,
+                            fontWeight: 600,
+                            color: "var(--rs-text-primary)",
+                            letterSpacing: "-0.02em",
+                          }}
+                        >
+                          {stat.value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Summary */}
+                  <div
+                    className="rounded-xl p-5"
+                    style={{
+                      background: "var(--rs-surface-1)",
+                      border: "1px solid var(--rs-border)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "var(--rs-text-muted)",
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                        marginBottom: 10,
+                      }}
+                    >
+                      Summary
+                    </div>
+                    <p
+                      style={{
+                        fontSize: 13,
+                        color: "var(--rs-text-secondary)",
+                        lineHeight: 1.65,
+                      }}
+                    >
+                      {detail.summary}
+                    </p>
+                  </div>
+
+                  {/* Symbols */}
+                  <div
+                    className="rounded-xl"
+                    style={{
+                      background: "var(--rs-surface-1)",
+                      border: "1px solid var(--rs-border)",
+                    }}
+                  >
+                    <div
+                      className="px-5 py-4"
+                      style={{ borderBottom: "1px solid var(--rs-border)" }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "var(--rs-text-muted)",
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        Symbols
+                      </div>
+                    </div>
+                    <div className="px-5 py-3 flex flex-wrap gap-2">
+                      {detail.symbols.length === 0 ? (
+                        <p
+                          style={{
+                            fontSize: 11,
+                            color: "var(--rs-text-muted)",
+                            padding: "4px 0",
+                          }}
+                        >
+                          No symbols detected
+                        </p>
+                      ) : (
+                        detail.symbols.map((sym) => (
+                          <div
+                            key={sym.name}
+                            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5"
+                            style={{
+                              background: "var(--rs-surface-2)",
+                              border: "1px solid var(--rs-border)",
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: 9,
+                                fontWeight: 700,
+                                color: kindColors[sym.kind],
+                                letterSpacing: "0.04em",
+                                textTransform: "uppercase",
+                              }}
+                            >
+                              {sym.kind}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 500,
+                                color: "var(--rs-text-primary)",
+                                fontFamily: "monospace",
+                              }}
+                            >
+                              {sym.name}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Imports & Exports */}
+                  <div
+                    className="grid gap-4"
+                    style={{ gridTemplateColumns: "1fr 1fr" }}
+                  >
+                    {[
+                      {
+                        title: "Imports",
+                        items: detail.imports,
+                        icon: Package,
+                        color: "var(--rs-blue)",
+                      },
+                      {
+                        title: "Exports",
+                        items: detail.exports,
+                        icon: ArrowUpRight,
+                        color: "var(--rs-green)",
+                      },
+                    ].map((section) => (
+                      <div
+                        key={section.title}
+                        className="rounded-xl"
+                        style={{
+                          background: "var(--rs-surface-1)",
+                          border: "1px solid var(--rs-border)",
+                        }}
+                      >
+                        <div
+                          className="flex items-center gap-2 px-4 py-3.5"
+                          style={{ borderBottom: "1px solid var(--rs-border)" }}
+                        >
+                          <section.icon
+                            size={11}
+                            style={{ color: section.color }}
+                          />
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "var(--rs-text-muted)",
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            {section.title}
+                          </div>
+                          <span
+                            className="ml-auto rounded-full px-1.5 py-0.5"
+                            style={{
+                              fontSize: 9,
+                              fontWeight: 600,
+                              background: "var(--rs-surface-3)",
+                              color: "var(--rs-text-muted)",
+                            }}
+                          >
+                            {section.items.length}
+                          </span>
+                        </div>
+                        <div className="px-4 py-3 flex flex-col gap-1.5">
+                          {section.items.map((item) => (
+                            <div
+                              key={item}
+                              className="flex items-center gap-2 rounded px-2 py-1 transition-colors cursor-pointer"
+                              onMouseEnter={(e) =>
+                                (e.currentTarget.style.background =
+                                  "rgba(255,255,255,0.04)")
+                              }
+                              onMouseLeave={(e) =>
+                                (e.currentTarget.style.background =
+                                  "transparent")
+                              }
+                            >
+                              <div
+                                className="rounded-full shrink-0"
+                                style={{
+                                  width: 4,
+                                  height: 4,
+                                  background: section.color,
+                                }}
+                              />
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  color: "var(--rs-text-secondary)",
+                                  fontFamily: "monospace",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {item}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Dependencies & Dependents */}
+                  <div
+                    className="grid gap-4"
+                    style={{ gridTemplateColumns: "1fr 1fr" }}
+                  >
+                    {[
+                      {
+                        title: "Dependencies",
+                        items: detail.deps,
+                        label: "files this imports from",
+                      },
+                      {
+                        title: "Dependents",
+                        items: detail.dependents,
+                        label: "files that import this",
+                      },
+                    ].map((section) => (
+                      <div
+                        key={section.title}
+                        className="rounded-xl"
+                        style={{
+                          background: "var(--rs-surface-1)",
+                          border: "1px solid var(--rs-border)",
+                        }}
+                      >
+                        <div
+                          className="px-4 py-3.5"
+                          style={{ borderBottom: "1px solid var(--rs-border)" }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: "var(--rs-text-muted)",
+                              letterSpacing: "0.06em",
+                              textTransform: "uppercase",
+                            }}
+                          >
+                            {section.title}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 10,
+                              color: "var(--rs-text-muted)",
+                              marginTop: 2,
+                            }}
+                          >
+                            {section.label}
+                          </div>
+                        </div>
+                        <div className="px-4 py-3 flex flex-col gap-1.5">
+                          {section.items.map((item) => (
+                            <button
+                              key={item}
+                              onClick={() =>
+                                setSelectedFile(
+                                  item.endsWith(".ts") ? item : item + ".ts",
+                                )
+                              }
+                              className="flex items-center gap-2 rounded px-2 py-1.5 w-full text-left transition-colors"
+                              onMouseEnter={(e) =>
+                                (e.currentTarget.style.background =
+                                  "rgba(255,255,255,0.04)")
+                              }
+                              onMouseLeave={(e) =>
+                                (e.currentTarget.style.background =
+                                  "transparent")
+                              }
+                            >
+                              <FileCode
+                                size={10}
+                                style={{
+                                  color: "var(--rs-text-muted)",
+                                  flexShrink: 0,
+                                }}
+                              />
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  color: "var(--rs-text-secondary)",
+                                  fontFamily: "monospace",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  flex: 1,
+                                }}
+                              >
+                                {item}
+                              </span>
+                              <ExternalLink
+                                size={9}
+                                style={{
+                                  color: "var(--rs-text-muted)",
+                                  flexShrink: 0,
+                                  opacity: 0,
+                                }}
+                                className="group-hover:opacity-100"
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className="rounded-xl p-6"
+                  style={{
+                    background: "var(--rs-surface-1)",
+                    border: "1px solid var(--rs-border)",
+                  }}
+                >
+                  <p style={{ fontSize: 13, color: "var(--rs-text-muted)" }}>
+                    Detailed analysis not available for this file.
+                  </p>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}

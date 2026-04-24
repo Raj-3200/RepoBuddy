@@ -1,16 +1,17 @@
 """FastAPI application entry point."""
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
+import app.models
+from app.api.router import api_router
 from app.config import get_settings
 from app.core.exceptions import RepoBuddyError
-from app.core.logging import setup_logging, get_logger
-from app.api.router import api_router
+from app.core.logging import get_logger, setup_logging
 
 settings = get_settings()
 logger = get_logger(__name__)
@@ -21,6 +22,26 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     log_level = "DEBUG" if settings.app_debug else "INFO"
     setup_logging(log_level)
     logger.info("RepoBuddy starting", env=settings.app_env)
+
+    # Production safety checks — warn loudly but don't crash, so misconfigured
+    # deploys are obvious in the logs.
+    if settings.app_env == "production":
+        if settings.app_debug:
+            logger.warning(
+                "production_misconfig",
+                issue="APP_DEBUG is true in production — disable it",
+            )
+        if settings.app_secret_key == "change-me-in-production":
+            logger.warning(
+                "production_misconfig",
+                issue="APP_SECRET_KEY is still the default — set a real secret",
+            )
+        if not settings.cors_origin_list or "localhost" in settings.cors_origins:
+            logger.warning(
+                "production_misconfig",
+                issue="CORS_ORIGINS includes localhost or is empty — restrict to real frontend origin",
+            )
+
     yield
     logger.info("RepoBuddy shutting down")
 

@@ -1,0 +1,768 @@
+// placeholder
+export const Dashboard = () => null;
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
+import {
+  ArrowRight,
+  ArrowUpRight,
+  BookOpen,
+  Compass,
+  FolderOpen,
+  GitBranch,
+  Loader2,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Target,
+  Upload as UploadIcon,
+  Zap,
+} from "lucide-react";
+import { useAppStore } from "@/lib/store";
+import { getDashboard, retryAnalysis, type DashboardData } from "@/lib/api";
+import {
+  Callout,
+  Card,
+  CardHeader,
+  DotSep,
+  EmptyState,
+  Eyebrow,
+  FadeIn,
+  MetaText,
+  PageHero,
+  PageShell,
+  Path,
+  Section,
+  SectionNav,
+  Skeleton,
+  StatStrip,
+  Tag,
+} from "../ds";
+function relativeTime(iso?: string | null): string {
+  if (!iso) return "—";
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "—";
+  const delta = Date.now() - t;
+  const m = Math.round(delta / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+const NAV_ITEMS = [
+  { id: "snapshot", label: "Snapshot" },
+  { id: "shape", label: "Module shape" },
+  { id: "central", label: "Central files" },
+  { id: "entries", label: "Entry points" },
+  { id: "next", label: "What to do next" },
+];
+function StatusBadge({ status }: { status: string }) {
+  const s = status.toUpperCase();
+  const color =
+    s === "COMPLETED"
+      ? "var(--rs-conf-deterministic)"
+      : s === "FAILED"
+        ? "var(--rs-sev-critical)"
+        : s === "RUNNING" || s === "PENDING"
+          ? "var(--rs-accent)"
+          : "var(--rs-text-muted)";
+  return (
+    <span
+      className="inline-flex items-center gap-1.5"
+      style={{
+        padding: "3px 9px",
+        borderRadius: "var(--rs-radius-pill)",
+        background: "var(--rs-surface-1)",
+        border: `1px solid ${color}33`,
+        fontSize: "var(--rs-text-meta)",
+        color,
+        letterSpacing: "var(--rs-tracking-snug)",
+      }}
+    >
+      {" "}
+      <span
+        style={{
+          width: 5,
+          height: 5,
+          borderRadius: "50%",
+          background: color,
+          boxShadow: `0 0 6px ${color}80`,
+        }}
+      />{" "}
+      {s === "COMPLETED" ? "Analysis complete" : s.toLowerCase()}{" "}
+    </span>
+  );
+}
+function ModuleShape({
+  modules,
+}: {
+  modules: { name: string; file_count: number; cohesion: number }[];
+}) {
+  if (modules.length === 0) {
+    return (
+      <EmptyState
+        title="No modules detected yet"
+        detail="The analysis hasn't surfaced module groupings for this repository."
+      />
+    );
+  }
+  const total = modules.reduce((s, m) => s + (m.file_count ?? 0), 0) || 1;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {" "}
+      <div
+        style={{
+          display: "flex",
+          height: 6,
+          borderRadius: "var(--rs-radius-pill)",
+          overflow: "hidden",
+          background: "var(--rs-surface-2)",
+          border: "1px solid var(--rs-hairline)",
+        }}
+      >
+        {" "}
+        {modules.slice(0, 8).map((m, i) => {
+          const pct = ((m.file_count ?? 0) / total) * 100;
+          const hue = (i * 47) % 360;
+          return (
+            <div
+              key={m.name}
+              title={`${m.name} — ${m.file_count} files`}
+              style={{
+                width: `${pct}%`,
+                background: `hsl(${hue}, 30%, 55%)`,
+                opacity: 0.55 + (m.cohesion ?? 0) * 0.4,
+              }}
+            />
+          );
+        })}{" "}
+      </div>{" "}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+          gap: 8,
+        }}
+      >
+        {" "}
+        {modules.slice(0, 8).map((m, i) => {
+          const hue = (i * 47) % 360;
+          const cohesion = Math.round((m.cohesion ?? 0) * 100);
+          return (
+            <div
+              key={m.name}
+              className="flex items-center gap-2"
+              style={{
+                padding: "8px 10px",
+                background: "var(--rs-surface-1)",
+                border: "1px solid var(--rs-hairline)",
+                borderRadius: "var(--rs-radius-md)",
+              }}
+            >
+              {" "}
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: `hsl(${hue}, 30%, 55%)`,
+                  flexShrink: 0,
+                }}
+              />{" "}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {" "}
+                <div
+                  style={{
+                    fontSize: "var(--rs-text-body)",
+                    fontWeight: 500,
+                    color: "var(--rs-text-primary)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {" "}
+                  {m.name || "(root)"}{" "}
+                </div>{" "}
+                <div
+                  className="flex items-center gap-1.5"
+                  style={{
+                    fontSize: "var(--rs-text-meta)",
+                    color: "var(--rs-text-muted)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {" "}
+                  <span>{m.file_count} files</span> <DotSep />{" "}
+                  <span>{cohesion}% cohesion</span>{" "}
+                </div>{" "}
+              </div>{" "}
+            </div>
+          );
+        })}{" "}
+      </div>{" "}
+    </div>
+  );
+}
+function CentralFilesList({
+  files,
+  onPick,
+}: {
+  files: { path: string; connections: number }[];
+  onPick: () => void;
+}) {
+  if (files.length === 0) {
+    return (
+      <EmptyState
+        title="No central files surfaced"
+        detail="Either the import graph is sparse, or the analysis didn't compute centrality for this snapshot."
+      />
+    );
+  }
+  const max = Math.max(...files.map((f) => f.connections ?? 0), 1);
+  return (
+    <Card variant="flat" padding={0}>
+      {" "}
+      {files.slice(0, 8).map((f, i) => {
+        const pct = ((f.connections ?? 0) / max) * 100;
+        return (
+          <button
+            key={f.path}
+            onClick={onPick}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1fr) 120px 64px",
+              alignItems: "center",
+              gap: 16,
+              padding: "12px 16px",
+              borderTop: i === 0 ? undefined : "1px solid var(--rs-hairline)",
+              transition:
+                "background var(--rs-dur-fast) var(--rs-ease-standard)",
+            }}
+            onMouseEnter={(e) =>
+              ((e.currentTarget as HTMLButtonElement).style.background =
+                "var(--rs-surface-2)")
+            }
+            onMouseLeave={(e) =>
+              ((e.currentTarget as HTMLButtonElement).style.background =
+                "transparent")
+            }
+          >
+            {" "}
+            <Path value={f.path} />{" "}
+            <div
+              style={{
+                height: 4,
+                borderRadius: 2,
+                background: "var(--rs-surface-2)",
+                overflow: "hidden",
+              }}
+            >
+              {" "}
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: "100%",
+                  background:
+                    pct >= 75
+                      ? "var(--rs-sev-high)"
+                      : pct >= 50
+                        ? "var(--rs-sev-medium)"
+                        : "var(--rs-accent)",
+                  transition:
+                    "width var(--rs-dur-slow) var(--rs-ease-entrance)",
+                }}
+              />{" "}
+            </div>{" "}
+            <div
+              className="flex items-center justify-end gap-1"
+              style={{
+                fontSize: "var(--rs-text-body)",
+                fontWeight: 500,
+                color: "var(--rs-text-primary)",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {" "}
+              {f.connections ?? 0}{" "}
+              <span
+                style={{
+                  fontSize: "var(--rs-text-meta)",
+                  color: "var(--rs-text-muted)",
+                  fontWeight: 400,
+                }}
+              >
+                {" "}
+                edges{" "}
+              </span>{" "}
+            </div>{" "}
+          </button>
+        );
+      })}{" "}
+    </Card>
+  );
+}
+export function Dashboard() {
+  const navigate = useNavigate();
+  const { activeRepoId, setActiveAnalysis } = useAppStore();
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [reanalyzing, setReanalyzing] = useState(false);
+  useEffect(() => {
+    if (!activeRepoId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    getDashboard(activeRepoId)
+      .then((d) => {
+        setData(d);
+        if (d.analysis) setActiveAnalysis(d.analysis.id);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [activeRepoId, setActiveAnalysis]);
+  const handleReanalyze = async () => {
+    if (!data?.analysis) return;
+    setReanalyzing(true);
+    try {
+      await retryAnalysis(data.analysis.id);
+      navigate("/app/progress");
+    } catch {
+      setReanalyzing(false);
+    }
+  };
+  if (!activeRepoId) {
+    return (
+      <PageShell width="base">
+        {" "}
+        <PageHero
+          eyebrow="Overview"
+          title="Add a repository to begin"
+          lede="RepoBuddy reads a snapshot of your codebase, traces its dependency graph, and writes editorial guidance grounded in concrete files. Upload or connect a repository to start."
+          actions={
+            <button
+              onClick={() => navigate("/app/upload")}
+              className="inline-flex items-center gap-2"
+              style={{
+                padding: "8px 14px",
+                fontSize: "var(--rs-text-body)",
+                fontWeight: 500,
+                color: "var(--rs-base)",
+                background: "var(--rs-text-primary)",
+                border: "none",
+                borderRadius: "var(--rs-radius-md)",
+                cursor: "pointer",
+              }}
+            >
+              {" "}
+              <UploadIcon size={13} /> Add repository{" "}
+            </button>
+          }
+        />{" "}
+        <EmptyState
+          icon={<Compass size={16} />}
+          title="No repository selected"
+          detail="Once a repository is added and analysed, every page in this app reads off that snapshot."
+        />{" "}
+      </PageShell>
+    );
+  }
+  if (loading) {
+    return (
+      <PageShell width="base">
+        {" "}
+        <PageHero
+          eyebrow="Overview"
+          title={<Skeleton width={420} height={26} />}
+          lede={<Skeleton width={520} height={14} />}
+        />{" "}
+        <Card variant="flat" padding={20}>
+          {" "}
+          <Skeleton width="40%" height={14} />{" "}
+          <div style={{ marginTop: 14 }}>
+            {" "}
+            <Skeleton width="100%" height={6} radius={3} />{" "}
+          </div>{" "}
+        </Card>{" "}
+        <div
+          className="flex items-center gap-2"
+          style={{ color: "var(--rs-text-muted)" }}
+        >
+          {" "}
+          <Loader2 className="animate-spin" size={14} />{" "}
+          <MetaText>Loading repository snapshot…</MetaText>{" "}
+        </div>{" "}
+      </PageShell>
+    );
+  }
+  if (!data) {
+    return (
+      <PageShell width="base">
+        {" "}
+        <PageHero
+          eyebrow="Overview"
+          title="Couldn't load this repository"
+          lede="The dashboard endpoint returned no data. The repository may have been removed, or the backend may be unavailable."
+        />{" "}
+        <EmptyState tone="danger" title="No snapshot available" />{" "}
+      </PageShell>
+    );
+  }
+  const repoName = data.repository?.name ?? "Repository";
+  const analysisStatus = data.analysis?.status ?? "PENDING";
+  const detectedLang = data.repository?.detected_language ?? "—";
+  const detectedFramework =
+    data.detected_framework ?? data.repository?.detected_framework;
+  const fileCount = data.file_count ?? 0;
+  const functionCount = data.function_count ?? 0;
+  const classCount = data.class_count ?? 0;
+  const totalLines = data.total_lines ?? 0;
+  const cycleCount = data.cycle_count ?? 0;
+  const topModules = data.top_modules ?? [];
+  const centralFiles = data.central_files ?? [];
+  const entryPoints = data.entry_points ?? [];
+  const isHealthy = cycleCount === 0;
+  return (
+    <PageShell width="wide">
+      {" "}
+      <PageHero
+        eyebrow="Overview · Snapshot"
+        title={repoName}
+        lede={
+          isHealthy
+            ? "A clean dependency graph with no detected cycles. Below is the shape of the codebase, the files that carry the most weight, and where to look first."
+            : `${cycleCount} dependency cycle${cycleCount === 1 ? "" : "s"} surfaced in this snapshot. Below is the shape of the codebase and where to look first to untangle them.`
+        }
+        meta={
+          <>
+            {" "}
+            <StatusBadge status={analysisStatus} /> <DotSep />{" "}
+            <MetaText>{detectedLang}</MetaText>{" "}
+            {detectedFramework && (
+              <>
+                {" "}
+                <DotSep /> <MetaText>{detectedFramework}</MetaText>{" "}
+              </>
+            )}{" "}
+            <DotSep />{" "}
+            <MetaText>
+              {" "}
+              Analysed {relativeTime(data.analysis?.updated_at)}{" "}
+            </MetaText>{" "}
+          </>
+        }
+        actions={
+          <button
+            onClick={handleReanalyze}
+            disabled={reanalyzing || !data.analysis}
+            className="inline-flex items-center gap-2"
+            style={{
+              padding: "7px 12px",
+              fontSize: "var(--rs-text-body)",
+              fontWeight: 500,
+              color: "var(--rs-text-primary)",
+              background: "var(--rs-surface-1)",
+              border: "1px solid var(--rs-hairline-strong)",
+              borderRadius: "var(--rs-radius-md)",
+              cursor: reanalyzing ? "wait" : "pointer",
+              opacity: reanalyzing ? 0.7 : 1,
+              transition:
+                "background var(--rs-dur-fast) var(--rs-ease-standard)",
+            }}
+          >
+            {" "}
+            <RefreshCw
+              size={12}
+              className={reanalyzing ? "animate-spin" : ""}
+            />{" "}
+            {reanalyzing ? "Starting…" : "Re-analyse"}{" "}
+          </button>
+        }
+      />{" "}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0, 1fr) 160px",
+          gap: 32,
+          alignItems: "start",
+        }}
+      >
+        {" "}
+        <div style={{ display: "flex", flexDirection: "column", gap: 36 }}>
+          {" "}
+          <Section
+            id="snapshot"
+            title="Snapshot at a glance"
+            description="Five numbers that frame everything else. Each one is grounded in the latest completed analysis."
+          >
+            {" "}
+            <StatStrip
+              items={[
+                { label: "Files", value: fileCount.toLocaleString() },
+                { label: "Functions", value: functionCount.toLocaleString() },
+                { label: "Classes", value: classCount.toLocaleString() },
+                { label: "Lines of code", value: totalLines.toLocaleString() },
+                {
+                  label: "Cycles",
+                  value: cycleCount.toString(),
+                  hint: cycleCount === 0 ? "clean" : "needs attention",
+                  tone: cycleCount === 0 ? undefined : "var(--rs-sev-high)",
+                },
+              ]}
+            />{" "}
+            {cycleCount > 0 ? (
+              <Callout tone="warn" title="Dependency cycles to break">
+                {" "}
+                The graph contains {cycleCount} cycle{" "}
+                {cycleCount === 1 ? "" : "s"}. Cycles make the codebase harder
+                to test in isolation and increase blast radius — open Insights
+                to see which modules are tangled.{" "}
+              </Callout>
+            ) : (
+              <Callout tone="success" title="No dependency cycles detected">
+                {" "}
+                The import graph is acyclic in this snapshot. Modules can be
+                reasoned about, tested, and refactored in isolation.{" "}
+              </Callout>
+            )}{" "}
+          </Section>{" "}
+          <Section
+            id="shape"
+            title="Module shape"
+            description="Top modules by file count, sized by share of the codebase. Cohesion shades the bar — denser bars are tighter modules."
+            aside={
+              <button
+                onClick={() => navigate("/app/graph")}
+                className="inline-flex items-center gap-1"
+                style={{
+                  fontSize: "var(--rs-text-meta)",
+                  color: "var(--rs-text-secondary)",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                {" "}
+                Open graph <ArrowUpRight size={11} />{" "}
+              </button>
+            }
+          >
+            {" "}
+            <ModuleShape modules={topModules} />{" "}
+          </Section>{" "}
+          <Section
+            id="central"
+            title="Central files"
+            description="Files with the most incoming and outgoing import edges. Changes here ripple the furthest — start review and refactor work from this list."
+            aside={
+              <button
+                onClick={() => navigate("/app/files")}
+                className="inline-flex items-center gap-1"
+                style={{
+                  fontSize: "var(--rs-text-meta)",
+                  color: "var(--rs-text-secondary)",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                {" "}
+                Browse all <ArrowUpRight size={11} />{" "}
+              </button>
+            }
+          >
+            {" "}
+            <CentralFilesList
+              files={centralFiles}
+              onPick={() => navigate("/app/files")}
+            />{" "}
+          </Section>{" "}
+          <Section
+            id="entries"
+            title="Entry points"
+            description="Files where execution actually begins — app boots, route handlers, workers, CLI entries. A change here is rarely local."
+          >
+            {" "}
+            {entryPoints.length === 0 ? (
+              <EmptyState
+                title="No entry points detected"
+                detail="The analysis didn't identify any explicit entry points in this snapshot."
+              />
+            ) : (
+              <Card variant="flat" padding={0}>
+                {" "}
+                {entryPoints.map((ep, i) => (
+                  <div
+                    key={ep.path + i}
+                    className="flex items-center justify-between gap-3"
+                    style={{
+                      padding: "10px 14px",
+                      borderTop:
+                        i === 0 ? undefined : "1px solid var(--rs-hairline)",
+                    }}
+                  >
+                    {" "}
+                    <div
+                      className="flex items-center gap-2"
+                      style={{ minWidth: 0, flex: 1 }}
+                    >
+                      {" "}
+                      <Target size={11} color="var(--rs-text-muted)" />{" "}
+                      <Path value={ep.path} />{" "}
+                    </div>{" "}
+                    <Tag size="sm" tone="info">
+                      {" "}
+                      {ep.type ?? "entry"}{" "}
+                    </Tag>{" "}
+                  </div>
+                ))}{" "}
+              </Card>
+            )}{" "}
+          </Section>{" "}
+          <Section
+            id="next"
+            title="What to do next"
+            description="Three editorial pathways through this analysis — each lands on a page that's grounded in the same snapshot."
+          >
+            {" "}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {" "}
+              {[
+                {
+                  title: "Read the architecture story",
+                  detail:
+                    "Editorial walkthrough — fix-first, longevity, review hotspots, coverage signals.",
+                  icon: Sparkles,
+                  to: "/app/insights",
+                  cta: "Open Insights",
+                },
+                {
+                  title: "Plan a change",
+                  detail:
+                    "Pick a file, see its blast radius, and get a step-by-step review plan grounded in the graph.",
+                  icon: Target,
+                  to: "/app/impact",
+                  cta: "Open Impact",
+                },
+                {
+                  title: "Map the architecture",
+                  detail:
+                    "Interactive graph of modules, hubs, and dependents. Inspect any node for plain-language role and metrics.",
+                  icon: GitBranch,
+                  to: "/app/graph",
+                  cta: "Open Graph",
+                },
+              ].map((p, i) => (
+                <FadeIn key={p.to} delay={i * 0.04}>
+                  {" "}
+                  <Card variant="raised" padding={18}>
+                    {" "}
+                    <CardHeader
+                      title={p.title}
+                      icon={
+                        <p.icon size={14} color="var(--rs-text-secondary)" />
+                      }
+                    />{" "}
+                    <p
+                      style={{
+                        margin: "10px 0 14px",
+                        fontSize: "var(--rs-text-body)",
+                        lineHeight: "var(--rs-leading-relaxed)",
+                        color: "var(--rs-text-secondary)",
+                      }}
+                    >
+                      {" "}
+                      {p.detail}{" "}
+                    </p>{" "}
+                    <button
+                      onClick={() => navigate(p.to)}
+                      className="inline-flex items-center gap-1"
+                      style={{
+                        fontSize: "var(--rs-text-body)",
+                        fontWeight: 500,
+                        color: "var(--rs-text-primary)",
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                    >
+                      {" "}
+                      {p.cta} <ArrowRight size={12} />{" "}
+                    </button>{" "}
+                  </Card>{" "}
+                </FadeIn>
+              ))}{" "}
+            </div>{" "}
+            <Card variant="outline" padding={16}>
+              {" "}
+              <div className="flex items-start gap-3">
+                {" "}
+                <ShieldCheck
+                  size={16}
+                  style={{
+                    color: "var(--rs-conf-deterministic)",
+                    marginTop: 2,
+                  }}
+                />{" "}
+                <div style={{ flex: 1 }}>
+                  {" "}
+                  <Eyebrow>Other places to look</Eyebrow>{" "}
+                  <div
+                    className="flex items-center gap-2 flex-wrap"
+                    style={{ marginTop: 8 }}
+                  >
+                    {" "}
+                    <Tag
+                      onClick={() => navigate("/app/risks")}
+                      icon={<Zap size={11} />}
+                    >
+                      {" "}
+                      Risk areas{" "}
+                    </Tag>{" "}
+                    <Tag
+                      onClick={() => navigate("/app/files")}
+                      icon={<FolderOpen size={11} />}
+                    >
+                      {" "}
+                      Files{" "}
+                    </Tag>{" "}
+                    <Tag
+                      onClick={() => navigate("/app/ai")}
+                      icon={<Sparkles size={11} />}
+                    >
+                      {" "}
+                      AI workspace{" "}
+                    </Tag>{" "}
+                    <Tag
+                      onClick={() => navigate("/app/docs")}
+                      icon={<BookOpen size={11} />}
+                    >
+                      {" "}
+                      Docs{" "}
+                    </Tag>{" "}
+                  </div>{" "}
+                </div>{" "}
+              </div>{" "}
+            </Card>{" "}
+          </Section>{" "}
+        </div>{" "}
+        <div className="hidden lg:block">
+          {" "}
+          <SectionNav items={NAV_ITEMS} />{" "}
+        </div>{" "}
+      </div>{" "}
+    </PageShell>
+  );
+}

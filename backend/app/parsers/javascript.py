@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
+from typing import ClassVar
 
 from app.core.logging import get_logger
 from app.parsers.base import (
     BaseParser,
-    ParseResult,
-    ParsedSymbol,
-    ParsedImport,
     ParsedExport,
+    ParsedImport,
+    ParsedSymbol,
+    ParseResult,
     SymbolKind,
 )
 
@@ -48,23 +49,21 @@ def _get_ts_language():
 
 
 class JavaScriptParser(BaseParser):
-    supported_extensions = {".js", ".jsx", ".mjs", ".cjs"}
+    supported_extensions: ClassVar[set[str]] = {".js", ".jsx", ".mjs", ".cjs"}
 
     def parse(self, file_path: str, content: str) -> ParseResult:
         return _parse_js_ts(file_path, content, "JavaScript", _get_js_language())
 
 
 class TypeScriptParser(BaseParser):
-    supported_extensions = {".ts", ".tsx"}
+    supported_extensions: ClassVar[set[str]] = {".ts", ".tsx"}
 
     def parse(self, file_path: str, content: str) -> ParseResult:
         lang = _get_ts_language()
         return _parse_js_ts(file_path, content, "TypeScript", lang)
 
 
-def _parse_js_ts(
-    file_path: str, content: str, language: str, ts_language
-) -> ParseResult:
+def _parse_js_ts(file_path: str, content: str, language: str, ts_language) -> ParseResult:
     """Parse JS/TS file using tree-sitter for robust AST extraction."""
     result = ParseResult(
         file_path=file_path,
@@ -102,6 +101,15 @@ def _extract_from_node(node, content: str, result: ParseResult) -> None:
         if node_type == "import_statement":
             _extract_import(child, content, result)
 
+        # ── Variable declarations: require() or arrow functions/constants ──
+        elif node_type in ("lexical_declaration", "variable_declaration"):
+            if not _extract_require(child, content, result):
+                _extract_variable_decl(child, content, result)
+
+        # ── Expression statements: require() without assignment, module.exports ──
+        elif node_type == "expression_statement":
+            _extract_require_expression(child, content, result)
+
         # ── Function declarations ──
         elif node_type in ("function_declaration", "generator_function_declaration"):
             name = _get_child_text(child, "identifier", content)
@@ -131,15 +139,10 @@ def _extract_from_node(node, content: str, result: ParseResult) -> None:
                         is_exported=_is_exported_node(child),
                     )
                 )
-                # Extract methods
                 _extract_class_methods(child, content, result)
 
-        # ── Variable declarations (arrow functions, constants) ──
-        elif node_type in ("lexical_declaration", "variable_declaration"):
-            _extract_variable_decl(child, content, result)
-
         # ── Export statements ──
-        elif node_type in ("export_statement",):
+        elif node_type == "export_statement":
             _extract_export(child, content, result)
 
         # ── Interface / Type alias (TypeScript) ──
@@ -182,9 +185,6 @@ def _extract_from_node(node, content: str, result: ParseResult) -> None:
                     )
                 )
 
-        # Recurse into export_statement to find inner declarations
-        elif node_type == "export_statement":
-            _extract_from_node(child, content, result)
         else:
             _extract_from_node(child, content, result)
 
@@ -252,9 +252,7 @@ def _extract_export(node, content: str, result: ParseResult) -> None:
                         names.append(name)
 
     for name in names:
-        result.exports.append(
-            ParsedExport(name=name, source=source, line=node.start_point[0] + 1)
-        )
+        result.exports.append(ParsedExport(name=name, source=source, line=node.start_point[0] + 1))
 
 
 def _extract_variable_decl(node, content: str, result: ParseResult) -> None:
@@ -295,6 +293,61 @@ def _extract_variable_decl(node, content: str, result: ParseResult) -> None:
                         line_start=child.start_point[0] + 1,
                         line_end=child.end_point[0] + 1,
                         is_exported=_is_exported_node(node),
+                    )
+                )
+
+
+def _extract_require(node, content: str, result: ParseResult) -> bool:
+    """Extract require() calls from variable declarations. Returns True if a require was found."""
+    for child in node.children:
+        if child.type == "variable_declarator":
+            # Look for: const x = require('...')
+            for sub in child.children:
+                if sub.type == "call_expression":
+                    func_node = None
+                    arg_node = None
+                    for part in sub.children:
+                        if part.type == "identifier" and _node_text(part, content) == "require":
+                            func_node = part
+                        elif part.type == "arguments":
+                            for arg in part.children:
+                                if arg.type == "string":
+                                    arg_node = arg
+                    if func_node and arg_node:
+                        source = _node_text(arg_node, content).strip("'\"")
+                        result.imports.append(
+                            ParsedImport(
+                                source=source,
+                                specifiers=[],
+                                is_default=True,
+                                line=node.start_point[0] + 1,
+                            )
+                        )
+                        return True
+    return False
+
+
+def _extract_require_expression(node, content: str, result: ParseResult) -> None:
+    """Extract require() from expression statements (no variable assignment)."""
+    for child in node.children:
+        if child.type == "call_expression":
+            func_node = None
+            arg_node = None
+            for part in child.children:
+                if part.type == "identifier" and _node_text(part, content) == "require":
+                    func_node = part
+                elif part.type == "arguments":
+                    for arg in part.children:
+                        if arg.type == "string":
+                            arg_node = arg
+            if func_node and arg_node:
+                source = _node_text(arg_node, content).strip("'\"")
+                result.imports.append(
+                    ParsedImport(
+                        source=source,
+                        specifiers=[],
+                        is_side_effect=True,
+                        line=node.start_point[0] + 1,
                     )
                 )
 
@@ -342,21 +395,14 @@ def _get_line(content: str, line_idx: int) -> str:
 
 
 def _is_exported_node(node) -> bool:
-    if node.parent and node.parent.type == "export_statement":
-        return True
-    return False
+    return bool(node.parent and node.parent.type == "export_statement")
 
 
 def _is_const(node) -> bool:
-    for child in node.children:
-        if child.type == "const":
-            return True
-    return False
+    return any(child.type == "const" for child in node.children)
 
 
 # ────────────────────────── Regex fallback ──────────────────────────
-
-import re
 
 
 def _parse_js_ts_regex(file_path: str, content: str, language: str) -> ParseResult:
@@ -383,14 +429,14 @@ def _parse_js_ts_regex(file_path: str, content: str, language: str) -> ParseResu
                 result.imports.append(ParsedImport(source=source, line=i + 1))
 
         # require() calls
-        require_match = re.match(r"""(?:const|let|var)\s+\w+\s*=\s*require\(['"](.+?)['"]\)""", stripped)
+        require_match = re.match(
+            r"""(?:const|let|var)\s+\w+\s*=\s*require\(['"](.+?)['"]\)""", stripped
+        )
         if require_match:
             result.imports.append(ParsedImport(source=require_match.group(1), line=i + 1))
 
         # Function declarations
-        func_match = re.match(
-            r"(?:export\s+)?(?:async\s+)?function\s+(\w+)", stripped
-        )
+        func_match = re.match(r"(?:export\s+)?(?:async\s+)?function\s+(\w+)", stripped)
         if func_match:
             result.symbols.append(
                 ParsedSymbol(
@@ -403,8 +449,10 @@ def _parse_js_ts_regex(file_path: str, content: str, language: str) -> ParseResu
             )
 
         # Arrow functions assigned to const/let
+        # Allows optional TS return type annotation: `const f = (x: T): R => …`
         arrow_match = re.match(
-            r"(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[\w]+)\s*=>",
+            r"(?:export\s+)?(?:const|let)\s+(\w+)\s*(?::\s*[^=]+?)?\s*=\s*"
+            r"(?:async\s+)?(?:\([^)]*\)|\w+)\s*(?::\s*[^=]+?)?\s*=>",
             stripped,
         )
         if arrow_match:
@@ -419,9 +467,7 @@ def _parse_js_ts_regex(file_path: str, content: str, language: str) -> ParseResu
             )
 
         # Class declarations
-        class_match = re.match(
-            r"(?:export\s+)?(?:abstract\s+)?class\s+(\w+)", stripped
-        )
+        class_match = re.match(r"(?:export\s+)?(?:abstract\s+)?class\s+(\w+)", stripped)
         if class_match:
             result.symbols.append(
                 ParsedSymbol(

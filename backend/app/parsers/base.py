@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import ClassVar
 
 
 class SymbolKind(str, Enum):
@@ -62,7 +63,7 @@ class ParseResult:
 class BaseParser:
     """Abstract base parser. All language parsers must implement this interface."""
 
-    supported_extensions: set[str] = set()
+    supported_extensions: ClassVar[set[str]] = set()
 
     def can_parse(self, file_path: str) -> bool:
         return Path(file_path).suffix.lower() in self.supported_extensions

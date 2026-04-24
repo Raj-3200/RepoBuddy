@@ -6,8 +6,8 @@ from pathlib import PurePosixPath
 
 import networkx as nx
 
-from app.parsers.base import ParseResult, ParsedImport
 from app.core.logging import get_logger
+from app.parsers.base import ParseResult
 
 logger = get_logger(__name__)
 

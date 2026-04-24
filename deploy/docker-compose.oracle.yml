@@ -1,0 +1,146 @@
+# Oracle Cloud VM compose — production.
+#
+# Services on the VM:
+#   - redis       (local, for Celery broker/result backend)
+#   - backend     (FastAPI, prod target, non-root, 2 workers)
+#   - celery      (worker, 2 concurrency)
+#   - caddy       (reverse proxy + automatic Let's Encrypt HTTPS)
+#
+# Postgres is NOT run here — you use Neon (external).
+#
+# Usage:
+#   cp .env.example .env              # then fill in real values
+#   docker compose -f deploy/docker-compose.oracle.yml up -d --build
+#
+# Required env vars (.env at repo root):
+#   APP_ENV=production
+#   APP_DEBUG=false
+#   APP_SECRET_KEY=<long random string>
+#   DATABASE_URL=postgresql+asyncpg://...neon.tech/...?ssl=require
+#   DATABASE_URL_SYNC=postgresql://...neon.tech/...?sslmode=require
+#   CORS_ORIGINS=https://<your-vercel-domain>
+#   REDIS_URL=redis://redis:6379/0
+#   CELERY_BROKER_URL=redis://redis:6379/1
+#   CELERY_RESULT_BACKEND=redis://redis:6379/2
+#   OPENAI_API_KEY=...
+#   OPENAI_BASE_URL=...
+#   OPENAI_MODEL=...
+#   API_DOMAIN=api.yourdomain.com     # used by Caddy
+#   ACME_EMAIL=you@yourdomain.com     # used by Caddy for Let's Encrypt
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: prod
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--workers",
+        "2",
+        "--proxy-headers",
+        "--forwarded-allow-ips=*",
+      ]
+    volumes:
+      - uploads:/app/uploads
+      - repos:/app/repos
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - internal
+
+  celery:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: prod
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    command:
+      [
+        "celery",
+        "-A",
+        "app.workers.celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=2",
+      ]
+    volumes:
+      - uploads:/app/uploads
+      - repos:/app/repos
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file:
+      - ../.env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+    networks:
+      - internal
+
+volumes:
+  redisdata:
+  uploads:
+  repos:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge

@@ -1,11 +1,10 @@
 """Repository and analysis schemas."""
 
+import re
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
-import re
-
+from pydantic import BaseModel, Field, field_validator
 
 # ────────────────────────── Repository ──────────────────────────
 
@@ -13,6 +12,7 @@ import re
 class RepositoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     url: str | None = None
+    access_token: str | None = Field(default=None, max_length=512)
 
     @field_validator("url")
     @classmethod
@@ -21,8 +21,14 @@ class RepositoryCreate(BaseModel):
             return v
         pattern = r"^https://github\.com/[\w\-\.]+/[\w\-\.]+(?:\.git)?$"
         if not re.match(pattern, v):
-            raise ValueError("Must be a valid GitHub repository URL (https://github.com/owner/repo)")
+            raise ValueError(
+                "Must be a valid GitHub repository URL (https://github.com/owner/repo)"
+            )
         return v
+
+
+class AnalysisRetryRequest(BaseModel):
+    access_token: str | None = Field(default=None, max_length=512)
 
 
 class RepositoryResponse(BaseModel):
@@ -199,6 +205,7 @@ class DashboardResponse(BaseModel):
     central_files: list[dict] = []
     risk_summary: dict = {}
     cycle_count: int = 0
+    entry_points: list[dict] = []
 
 
 # ────────────────────────── Documentation ──────────────────────────
@@ -208,3 +215,15 @@ class DocumentationResponse(BaseModel):
     onboarding_doc: str | None
     architecture_doc: str | None
     key_modules: list[dict] = []
+    # Structured data for premium rendering
+    repo_name: str | None = None
+    detected_framework: str | None = None
+    detected_language: str | None = None
+    stats: dict = {}
+    entry_points: list[dict] = []
+    modules: list[dict] = []
+    central_files: list[dict] = []
+    cycles: list[list[str]] = []
+    risk_areas: list[dict] = []
+    most_imported: list[dict] = []
+    graph_metrics: dict = {}

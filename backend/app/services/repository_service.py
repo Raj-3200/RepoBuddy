@@ -1,14 +1,13 @@
 """Repository management service."""
 
 import shutil
-import uuid
 import zipfile
 from pathlib import Path
 
 import git
 
 from app.config import get_settings
-from app.core.exceptions import InvalidRepositoryError, IngestionError
+from app.core.exceptions import IngestionError, InvalidRepositoryError
 from app.core.logging import get_logger
 
 settings = get_settings()
@@ -16,23 +15,60 @@ logger = get_logger(__name__)
 
 # Directories to skip during scanning
 IGNORED_DIRS = {
-    "node_modules", ".git", ".svn", ".hg", "__pycache__", ".tox",
-    ".mypy_cache", ".ruff_cache", ".pytest_cache", "dist", "build",
-    ".next", ".nuxt", "coverage", ".nyc_output", "vendor", ".venv",
-    "venv", "env", ".env", ".idea", ".vscode", "bower_components",
+    "node_modules",
+    ".git",
+    ".svn",
+    ".hg",
+    "__pycache__",
+    ".tox",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    "coverage",
+    ".nyc_output",
+    "vendor",
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+    ".idea",
+    ".vscode",
+    "bower_components",
 }
 
 # Supported source file extensions
 SOURCE_EXTENSIONS = {
-    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
-    ".py", ".json", ".yaml", ".yml", ".toml",
-    ".md", ".html", ".css", ".scss", ".less",
-    ".vue", ".svelte",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+    ".py",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".md",
+    ".html",
+    ".css",
+    ".scss",
+    ".less",
+    ".vue",
+    ".svelte",
 }
 
 
 def clone_github_repo(url: str, target_dir: Path, token: str | None = None) -> Path:
-    """Clone a GitHub repository to local storage."""
+    """Clone a GitHub repository to local storage.
+
+    Classifies git failures into user-facing messages instead of leaking raw
+    git stderr to the UI.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -40,11 +76,45 @@ def clone_github_repo(url: str, target_dir: Path, token: str | None = None) -> P
         if token and "github.com" in url:
             clone_url = url.replace("https://", f"https://x-access-token:{token}@")
 
-        logger.info("cloning_repository", url=url, target=str(target_dir))
+        logger.info("cloning_repository", url=url, target=str(target_dir), has_token=bool(token))
         git.Repo.clone_from(clone_url, str(target_dir), depth=1)
         return target_dir
     except git.exc.GitCommandError as e:
-        raise InvalidRepositoryError(f"Failed to clone repository: {e}") from e
+        stderr = (getattr(e, "stderr", "") or str(e)).lower()
+
+        # Clean up any partial clone directory so retries start clean
+        try:
+            if target_dir.exists():
+                shutil.rmtree(target_dir, ignore_errors=True)
+        except Exception:  # pragma: no cover — best-effort cleanup
+            pass
+
+        if (
+            "could not read username" in stderr
+            or "authentication failed" in stderr
+            or "403" in stderr
+        ):
+            msg = (
+                "Repository appears to be private or requires authentication. "
+                "Provide a GitHub personal access token with repo scope to analyze it."
+            )
+        elif "repository not found" in stderr or "404" in stderr:
+            msg = "Repository not found. Check the URL and that the repo is accessible."
+        elif (
+            "could not resolve host" in stderr
+            or "network is unreachable" in stderr
+            or "timed out" in stderr
+        ):
+            msg = "Network error while contacting GitHub. Check your connection and try again."
+        else:
+            # Fall back to the first non-empty stderr line, scrubbed of the token
+            first_line = next(
+                (line for line in stderr.splitlines() if line.strip()), "git clone failed"
+            )
+            msg = f"Clone failed: {first_line.strip()[:200]}"
+
+        logger.warning("clone_failed", url=url, message=msg)
+        raise InvalidRepositoryError(msg) from e
 
 
 def extract_zip_repo(zip_path: Path, target_dir: Path) -> Path:
@@ -57,9 +127,7 @@ def extract_zip_repo(zip_path: Path, target_dir: Path) -> Path:
             for member in zf.namelist():
                 member_path = Path(member)
                 if member_path.is_absolute() or ".." in member_path.parts:
-                    raise InvalidRepositoryError(
-                        f"ZIP contains unsafe path: {member}"
-                    )
+                    raise InvalidRepositoryError(f"ZIP contains unsafe path: {member}")
 
             zf.extractall(target_dir)
 
@@ -105,15 +173,17 @@ def scan_repository_files(repo_dir: Path) -> list[dict]:
             content = file_path.read_text(encoding="utf-8", errors="replace")
             line_count = content.count("\n") + 1
 
-            files.append({
-                "path": str(rel_path).replace("\\", "/"),
-                "name": file_path.name,
-                "extension": ext,
-                "language": _detect_language(ext),
-                "size_bytes": stat.st_size,
-                "line_count": line_count,
-                "is_entry_point": _is_entry_point(file_path.name, ext),
-            })
+            files.append(
+                {
+                    "path": str(rel_path).replace("\\", "/"),
+                    "name": file_path.name,
+                    "extension": ext,
+                    "language": _detect_language(ext),
+                    "size_bytes": stat.st_size,
+                    "line_count": line_count,
+                    "is_entry_point": _is_entry_point(file_path.name, ext),
+                }
+            )
         except Exception as e:
             logger.warning("file_scan_error", path=str(rel_path), error=str(e))
             continue
@@ -132,9 +202,13 @@ def detect_framework(repo_dir: Path) -> tuple[str | None, str | None]:
             deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
 
             if "next" in deps:
-                return "Next.js", "TypeScript" if (repo_dir / "tsconfig.json").exists() else "JavaScript"
+                return "Next.js", "TypeScript" if (
+                    repo_dir / "tsconfig.json"
+                ).exists() else "JavaScript"
             if "react" in deps:
-                return "React", "TypeScript" if (repo_dir / "tsconfig.json").exists() else "JavaScript"
+                return "React", "TypeScript" if (
+                    repo_dir / "tsconfig.json"
+                ).exists() else "JavaScript"
             if "vue" in deps:
                 return "Vue.js", "JavaScript"
             if "express" in deps:
@@ -157,22 +231,43 @@ def detect_framework(repo_dir: Path) -> tuple[str | None, str | None]:
 
 def _detect_language(ext: str) -> str | None:
     mapping = {
-        ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
-        ".ts": "TypeScript", ".tsx": "TypeScript",
+        ".js": "JavaScript",
+        ".jsx": "JavaScript",
+        ".mjs": "JavaScript",
+        ".cjs": "JavaScript",
+        ".ts": "TypeScript",
+        ".tsx": "TypeScript",
         ".py": "Python",
-        ".json": "JSON", ".yaml": "YAML", ".yml": "YAML", ".toml": "TOML",
+        ".json": "JSON",
+        ".yaml": "YAML",
+        ".yml": "YAML",
+        ".toml": "TOML",
         ".md": "Markdown",
-        ".html": "HTML", ".css": "CSS", ".scss": "SCSS", ".less": "Less",
-        ".vue": "Vue", ".svelte": "Svelte",
+        ".html": "HTML",
+        ".css": "CSS",
+        ".scss": "SCSS",
+        ".less": "Less",
+        ".vue": "Vue",
+        ".svelte": "Svelte",
     }
     return mapping.get(ext)
 
 
 def _is_entry_point(name: str, ext: str) -> bool:
     entry_names = {
-        "index.js", "index.ts", "index.tsx", "index.jsx",
-        "main.js", "main.ts", "app.js", "app.ts", "app.tsx",
-        "server.js", "server.ts",
-        "main.py", "app.py", "__main__.py",
+        "index.js",
+        "index.ts",
+        "index.tsx",
+        "index.jsx",
+        "main.js",
+        "main.ts",
+        "app.js",
+        "app.ts",
+        "app.tsx",
+        "server.js",
+        "server.ts",
+        "main.py",
+        "app.py",
+        "__main__.py",
     }
     return name.lower() in entry_names
