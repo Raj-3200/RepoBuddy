@@ -1,8 +1,71 @@
 const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
 
+// ── Identity headers ─────────────────────────────────────────────────────
+// Every request carries one of:
+//   • Authorization: Bearer <github_token>   (signed-in users — localStorage)
+//   • X-Session-Id: <uuid>                   (anonymous users — sessionStorage)
+// The backend's resolve_owner_id dependency rejects requests that have
+// neither header.
+
+const SESSION_ID_KEY = "repobuddy_session_id";
+
+function getOrCreateSessionId(): string {
+  if (typeof window === "undefined") return "ssr";
+  let sid = window.sessionStorage.getItem(SESSION_ID_KEY);
+  if (!sid) {
+    sid =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) +
+          Math.random().toString(36).slice(2);
+    window.sessionStorage.setItem(SESSION_ID_KEY, sid);
+  }
+  return sid;
+}
+
+function readStoredGithubToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    // Canonical key (JSON-encoded by zustand store).
+    const raw = window.localStorage.getItem("repobuddy_gh_token");
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === "string" && parsed) return parsed;
+      } catch {
+        if (raw) return raw;
+      }
+    }
+    // SignIn popup stores token here as raw string.
+    const legacy = window.localStorage.getItem("github_access_token");
+    return legacy || null;
+  } catch {
+    return null;
+  }
+}
+
+function identityHeaders(): Record<string, string> {
+  const token = readStoredGithubToken();
+  if (token) return { Authorization: `Bearer ${token}` };
+  return { "X-Session-Id": getOrCreateSessionId() };
+}
+
+export function currentSessionId(): string {
+  return getOrCreateSessionId();
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const isFormData =
+    typeof FormData !== "undefined" && options?.body instanceof FormData;
+  const baseHeaders: Record<string, string> = isFormData
+    ? {}
+    : { "Content-Type": "application/json" };
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: {
+      ...baseHeaders,
+      ...identityHeaders(),
+      ...(options?.headers as Record<string, string> | undefined),
+    },
     ...options,
   });
   if (!res.ok) {
@@ -283,6 +346,7 @@ export const uploadRepository = (file: File) => {
   formData.append("file", file);
   return fetch(`${API_BASE}/repositories/upload`, {
     method: "POST",
+    headers: identityHeaders(),
     body: formData,
   }).then(async (res) => {
     if (!res.ok) throw new Error("Upload failed");
