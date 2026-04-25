@@ -4,6 +4,7 @@ import { motion } from "motion/react";
 import { Github, ArrowRight, Link } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 import { createRepository } from "@/lib/api";
+import { Logo } from "@/app/components/Logo";
 
 export function SignIn() {
   const navigate = useNavigate();
@@ -84,31 +85,7 @@ export function SignIn() {
       >
         {/* Logo */}
         <div className="flex items-center justify-center gap-2.5 mb-8">
-          <div
-            className="flex items-center justify-center rounded-lg"
-            style={{
-              width: 32,
-              height: 32,
-              background: "var(--rs-accent)",
-              boxShadow: "0 0 20px rgba(124,108,245,0.4)",
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 14 14" fill="none">
-              <path
-                d="M7 1L12.5 4.5V10.5L7 14L1.5 10.5V4.5L7 1Z"
-                stroke="white"
-                strokeWidth="1.2"
-                fill="none"
-              />
-              <circle cx="7" cy="7" r="2" fill="white" fillOpacity="0.9" />
-              <path
-                d="M7 1V5M7 9V13M1.5 4.5L5 6.5M9 7.5L12.5 9.5M1.5 10.5L5 8.5M9 5.5L12.5 4.5"
-                stroke="white"
-                strokeWidth="0.8"
-                strokeOpacity="0.7"
-              />
-            </svg>
-          </div>
+          <Logo size={32} />
           <span
             style={{
               fontSize: 18,

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { listRepositories, listAnalyses, type Repository } from "@/lib/api";
 import { useAppStore } from "@/lib/store";
+import { Logo } from "@/app/components/Logo";
 
 const navItems = [
   { to: "/app", label: "Overview", icon: LayoutDashboard, end: true },
@@ -108,30 +109,8 @@ export function AppShell() {
               cursor: "pointer",
             }}
           >
-            <div
-              className="flex items-center justify-center rounded-lg shrink-0"
-              style={{
-                width: 28,
-                height: 28,
-                background: "var(--rs-accent)",
-                boxShadow: "0 0 16px rgba(124,108,245,0.35)",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path
-                  d="M7 1L12.5 4.5V10.5L7 14L1.5 10.5V4.5L7 1Z"
-                  stroke="white"
-                  strokeWidth="1.2"
-                  fill="none"
-                />
-                <circle cx="7" cy="7" r="2" fill="white" fillOpacity="0.9" />
-                <path
-                  d="M7 1V5M7 9V13M1.5 4.5L5 6.5M9 7.5L12.5 9.5M1.5 10.5L5 8.5M9 5.5L12.5 4.5"
-                  stroke="white"
-                  strokeWidth="0.8"
-                  strokeOpacity="0.7"
-                />
-              </svg>
+            <div className="shrink-0">
+              <Logo size={28} />
             </div>
             <span
               style={{

@@ -1,8 +1,18 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
-import { ArrowRight, GitBranch, Github, Zap, Shield, Eye } from "lucide-react";
+import {
+  ArrowRight,
+  GitBranch,
+  Github,
+  Zap,
+  Shield,
+  Eye,
+  Menu,
+  X,
+} from "lucide-react";
 import { useAppStore } from "@/lib/store";
+import { Logo } from "@/app/components/Logo";
 
 /* ─── Animated Graph Canvas ─── */
 interface Node {
@@ -303,6 +313,7 @@ export function Landing() {
   const navigate = useNavigate();
   const { signIn, user } = useAppStore();
   const [email, setEmail] = useState("");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   // Get Started / Try-it flow: make sure the user has a session, then
   // drop straight into the upload page.
@@ -390,31 +401,7 @@ export function Landing() {
             cursor: "pointer",
           }}
         >
-          <div
-            className="flex items-center justify-center rounded-lg"
-            style={{
-              width: 30,
-              height: 30,
-              background: "var(--rs-accent)",
-              boxShadow: "0 0 18px rgba(124,108,245,0.4)",
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 14 14" fill="none">
-              <path
-                d="M7 1L12.5 4.5V10.5L7 14L1.5 10.5V4.5L7 1Z"
-                stroke="white"
-                strokeWidth="1.2"
-                fill="none"
-              />
-              <circle cx="7" cy="7" r="2" fill="white" fillOpacity="0.9" />
-              <path
-                d="M7 1V5M7 9V13M1.5 4.5L5 6.5M9 7.5L12.5 9.5M1.5 10.5L5 8.5M9 5.5L12.5 4.5"
-                stroke="white"
-                strokeWidth="0.8"
-                strokeOpacity="0.7"
-              />
-            </svg>
-          </div>
+          <Logo size={34} />
           <span
             style={{ fontSize: 15, fontWeight: 600, letterSpacing: "-0.02em" }}
           >
@@ -459,6 +446,7 @@ export function Landing() {
           {!user && (
             <button
               onClick={() => navigate("/signin")}
+              className="hidden sm:inline-flex"
               style={{
                 fontSize: 13,
                 color: "var(--rs-text-secondary)",
@@ -504,8 +492,80 @@ export function Landing() {
           >
             {user ? "Open dashboard" : "Get Started"}
           </button>
+
+          {/* Mobile menu toggle */}
+          <button
+            onClick={() => setMobileNavOpen((v) => !v)}
+            aria-label={mobileNavOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileNavOpen}
+            className="md:hidden inline-flex items-center justify-center rounded-lg"
+            style={{
+              width: 36,
+              height: 36,
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid var(--rs-border)",
+              color: "var(--rs-text-primary)",
+              cursor: "pointer",
+            }}
+          >
+            {mobileNavOpen ? <X size={16} /> : <Menu size={16} />}
+          </button>
         </div>
       </nav>
+
+      {/* Mobile dropdown menu */}
+      {mobileNavOpen && (
+        <div
+          className="md:hidden relative z-10 px-8 pb-4"
+          style={{ borderBottom: "1px solid var(--rs-border)" }}
+        >
+          <div className="flex flex-col gap-1 pt-2">
+            {[
+              { label: "Product", href: "#features" },
+              { label: "How it works", href: "#how-it-works" },
+              {
+                label: "Docs",
+                href: "https://github.com/Raj-3200/repobuddy-frontend#readme",
+                external: true,
+              },
+            ].map((item) => (
+              <a
+                key={item.label}
+                href={item.href}
+                target={item.external ? "_blank" : undefined}
+                rel={item.external ? "noopener noreferrer" : undefined}
+                onClick={() => setMobileNavOpen(false)}
+                className="rounded-md px-3 py-2.5"
+                style={{
+                  fontSize: 14,
+                  color: "var(--rs-text-secondary)",
+                  textDecoration: "none",
+                }}
+              >
+                {item.label}
+              </a>
+            ))}
+            {!user && (
+              <button
+                onClick={() => {
+                  setMobileNavOpen(false);
+                  navigate("/signin");
+                }}
+                className="sm:hidden rounded-md px-3 py-2.5 text-left"
+                style={{
+                  fontSize: 14,
+                  color: "var(--rs-text-secondary)",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                Sign in
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Hero */}
       <section className="relative z-10 flex flex-col items-center text-center px-6 pt-20 pb-16 md:pt-28">
@@ -604,7 +664,7 @@ export function Landing() {
               e.currentTarget.style.transform = "translateY(0)";
             }}
           >
-            Upload / Analyze a repo
+            Analyze a repo
             <ArrowRight size={14} />
           </button>
 
@@ -635,51 +695,6 @@ export function Landing() {
             </button>
           )}
           {/* Connect GitHub navigates to sign in */}
-        </motion.div>
-
-        {/* Trusted by line */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.7, duration: 0.8 }}
-          className="mt-12 flex items-center gap-4"
-        >
-          <div
-            style={{ height: 1, width: 60, background: "var(--rs-border)" }}
-          />
-          <span
-            style={{
-              fontSize: 11,
-              color: "var(--rs-text-muted)",
-              letterSpacing: "0.06em",
-              textTransform: "uppercase",
-            }}
-          >
-            Used by teams at
-          </span>
-          <div
-            style={{ height: 1, width: 60, background: "var(--rs-border)" }}
-          />
-        </motion.div>
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.85, duration: 0.8 }}
-          className="mt-4 flex items-center gap-8"
-        >
-          {["Stripe", "Linear", "Vercel", "Resend", "Clerk"].map((name) => (
-            <span
-              key={name}
-              style={{
-                fontSize: 12,
-                fontWeight: 500,
-                color: "var(--rs-text-muted)",
-                letterSpacing: "0.02em",
-              }}
-            >
-              {name}
-            </span>
-          ))}
         </motion.div>
       </section>
 
@@ -1111,25 +1126,7 @@ export function Landing() {
         style={{ borderTop: "1px solid var(--rs-border)" }}
       >
         <div className="flex items-center gap-2">
-          <div
-            className="flex items-center justify-center rounded-md"
-            style={{
-              width: 20,
-              height: 20,
-              background: "var(--rs-accent)",
-              opacity: 0.8,
-            }}
-          >
-            <svg width="10" height="10" viewBox="0 0 14 14" fill="none">
-              <path
-                d="M7 1L12.5 4.5V10.5L7 14L1.5 10.5V4.5L7 1Z"
-                stroke="white"
-                strokeWidth="1.5"
-                fill="none"
-              />
-              <circle cx="7" cy="7" r="2" fill="white" />
-            </svg>
-          </div>
+          <Logo size={20} />
           <span
             style={{
               fontSize: 12,
