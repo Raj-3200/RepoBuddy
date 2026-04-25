@@ -146,10 +146,12 @@ export function AnalyzeAnotherRepoModal({
         typeof window !== "undefined"
           ? (localStorage.getItem("github_access_token") ?? undefined)
           : undefined;
+      // Always pass the token when we have one — needed for private repos and
+      // also avoids rate-limiting on the backend's clone step.
       const repo = await createRepository({
         name: r.full_name,
-        url: r.html_url,
-        access_token: r.private && accessToken ? accessToken : undefined,
+        url: r.html_url.endsWith(".git") ? r.html_url : `${r.html_url}.git`,
+        access_token: accessToken,
       });
       setActiveRepo(repo.id);
       onClose();
@@ -272,7 +274,11 @@ export function AnalyzeAnotherRepoModal({
               onRefresh={loadRepos}
               onPick={handlePickRepo}
               pickingFullName={pickingFullName}
-              onSwitchToUrl={() => setTab("url")}
+              submitError={submitError}
+              onSwitchToUrl={() => {
+                setSubmitError(null);
+                setTab("url");
+              }}
               onSignIn={() => {
                 onClose();
                 navigate("/sign-in");
@@ -439,6 +445,7 @@ function MyGithubPanel({
   onRefresh,
   onPick,
   pickingFullName,
+  submitError,
   onSwitchToUrl,
   onSignIn,
 }: {
@@ -452,6 +459,7 @@ function MyGithubPanel({
   onRefresh: () => void;
   onPick: (r: GithubRepo) => void;
   pickingFullName: string | null;
+  submitError: string | null;
   onSwitchToUrl: () => void;
   onSignIn: () => void;
 }) {
@@ -613,6 +621,31 @@ function MyGithubPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {submitError && (
+        <div
+          role="alert"
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            padding: "10px 12px",
+            background: "rgba(255,118,118,0.08)",
+            border: "1px solid rgba(255,118,118,0.35)",
+            borderRadius: "var(--rs-radius-md, 8px)",
+            color: "var(--rs-red, #ff7676)",
+            fontSize: 12,
+            lineHeight: 1.45,
+          }}
+        >
+          <AlertCircle size={13} style={{ marginTop: 1, flexShrink: 0 }} />
+          <div>
+            <div style={{ fontWeight: 500, marginBottom: 2 }}>
+              Couldn't start the analysis
+            </div>
+            <div>{submitError}</div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <div
           style={{

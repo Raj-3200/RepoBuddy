@@ -584,8 +584,8 @@ export function UploadPage() {
           : undefined;
       const repo = await createRepository({
         name: r.full_name,
-        url: r.html_url,
-        access_token: r.private && accessToken ? accessToken : undefined,
+        url: r.html_url.endsWith(".git") ? r.html_url : `${r.html_url}.git`,
+        access_token: accessToken,
       });
       setActiveRepo(repo.id);
       navigate("/app/progress");
