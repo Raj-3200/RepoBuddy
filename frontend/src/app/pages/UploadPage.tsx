@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DragEvent, KeyboardEvent } from "react";
 import { useNavigate } from "react-router";
 import {
@@ -6,11 +6,20 @@ import {
   ArrowRight,
   FileArchive,
   Github,
+  GitFork,
   Loader2,
   Lock,
+  RefreshCw,
+  Search,
+  Star,
   Upload as UploadIcon,
 } from "lucide-react";
-import { createRepository, uploadRepository } from "@/lib/api";
+import {
+  createRepository,
+  listGithubRepos,
+  uploadRepository,
+  type GithubRepo,
+} from "@/lib/api";
 import { useAppStore } from "@/lib/store";
 import {
   Callout,
@@ -24,7 +33,7 @@ import {
   Tag,
 } from "../ds";
 
-type Mode = "github" | "upload";
+type Mode = "mygithub" | "github" | "upload";
 
 const MAX_UPLOAD_MB = 100;
 
@@ -38,6 +47,7 @@ function ModeTabs({
   onChange: (m: Mode) => void;
 }) {
   const tabs: { key: Mode; label: string; Icon: typeof Github }[] = [
+    { key: "mygithub", label: "My GitHub", Icon: Github },
     { key: "github", label: "GitHub URL", Icon: Github },
     { key: "upload", label: "Upload ZIP", Icon: FileArchive },
   ];
@@ -149,16 +159,445 @@ function PrimaryButton({
 
 // ── page ───────────────────────────────────────────────────────────────────
 
+function MyGithubTab({
+  isSignedIn,
+  ghLoading,
+  ghError,
+  ghRepos,
+  filteredRepos,
+  ghQuery,
+  onChangeQuery,
+  onRefresh,
+  onPick,
+  pickingFullName,
+  onSwitchToUrl,
+  onSignIn,
+}: {
+  isSignedIn: boolean;
+  ghLoading: boolean;
+  ghError: string | null;
+  ghRepos: GithubRepo[] | null;
+  filteredRepos: GithubRepo[];
+  ghQuery: string;
+  onChangeQuery: (v: string) => void;
+  onRefresh: () => void;
+  onPick: (r: GithubRepo) => void;
+  pickingFullName: string | null;
+  onSwitchToUrl: () => void;
+  onSignIn: () => void;
+}) {
+  if (!isSignedIn) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Eyebrow>Sign in required</Eyebrow>
+        <Callout
+          icon={<Github size={14} />}
+          title="Sign in with GitHub to list your repositories"
+        >
+          We use the GitHub OAuth token issued at sign-in to fetch the
+          repositories on your account. Public repos can be analysed without
+          signing in — paste any URL on the next tab.
+        </Callout>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={onSignIn}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 16px",
+              fontSize: "var(--rs-text-body)",
+              fontWeight: 500,
+              background: "var(--rs-text-primary)",
+              color: "var(--rs-base)",
+              borderRadius: "var(--rs-radius-md)",
+            }}
+          >
+            <Github size={13} />
+            Sign in with GitHub
+          </button>
+          <button
+            onClick={onSwitchToUrl}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 16px",
+              fontSize: "var(--rs-text-body)",
+              fontWeight: 500,
+              background: "var(--rs-surface-2)",
+              color: "var(--rs-text-primary)",
+              border: "1px solid var(--rs-hairline-strong)",
+              borderRadius: "var(--rs-radius-md)",
+            }}
+          >
+            Paste a public URL instead
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (ghLoading && !ghRepos) {
+    return (
+      <div
+        className="flex items-center gap-2"
+        style={{ color: "var(--rs-text-muted)" }}
+      >
+        <Loader2 className="animate-spin" size={14} />
+        <MetaText>Loading your GitHub repositories…</MetaText>
+      </div>
+    );
+  }
+
+  if (ghError) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Callout
+          tone="danger"
+          icon={<AlertCircle size={14} />}
+          title="Couldn't load your GitHub repositories"
+        >
+          {ghError}
+        </Callout>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={onRefresh}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 14px",
+              fontSize: "var(--rs-text-body)",
+              fontWeight: 500,
+              background: "var(--rs-surface-2)",
+              color: "var(--rs-text-primary)",
+              border: "1px solid var(--rs-hairline-strong)",
+              borderRadius: "var(--rs-radius-md)",
+            }}
+          >
+            <RefreshCw size={12} />
+            Try again
+          </button>
+          <button
+            onClick={onSwitchToUrl}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 14px",
+              fontSize: "var(--rs-text-body)",
+              fontWeight: 500,
+              color: "var(--rs-text-secondary)",
+            }}
+          >
+            Paste a URL instead
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const repos = ghRepos ?? [];
+
+  if (repos.length === 0) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Eyebrow>Your GitHub</Eyebrow>
+        <Callout
+          icon={<Github size={14} />}
+          title="No repositories for analysis"
+        >
+          Your GitHub account has no repositories that we can read. Create one
+          on GitHub, or paste any public repo URL on the next tab.
+        </Callout>
+        <div>
+          <button
+            onClick={onSwitchToUrl}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 16px",
+              fontSize: "var(--rs-text-body)",
+              fontWeight: 500,
+              background: "var(--rs-text-primary)",
+              color: "var(--rs-base)",
+              borderRadius: "var(--rs-radius-md)",
+            }}
+          >
+            Paste a public URL instead
+            <ArrowRight size={13} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div className="flex items-center gap-2">
+        <FieldShell>
+          <div className="flex items-center gap-2">
+            <Search size={13} color="var(--rs-text-muted)" />
+            <input
+              value={ghQuery}
+              onChange={(e) => onChangeQuery(e.target.value)}
+              placeholder="Filter your repositories…"
+              spellCheck={false}
+              style={{
+                width: "100%",
+                background: "transparent",
+                border: "none",
+                outline: "none",
+                fontSize: "var(--rs-text-body)",
+                color: "var(--rs-text-primary)",
+              }}
+            />
+          </div>
+        </FieldShell>
+        <button
+          onClick={onRefresh}
+          title="Refresh"
+          disabled={ghLoading}
+          style={{
+            all: "unset",
+            cursor: ghLoading ? "wait" : "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 36,
+            height: 36,
+            background: "var(--rs-surface-1)",
+            border: "1px solid var(--rs-hairline-strong)",
+            borderRadius: "var(--rs-radius-md)",
+            color: "var(--rs-text-secondary)",
+          }}
+        >
+          {ghLoading ? (
+            <Loader2 className="animate-spin" size={13} />
+          ) : (
+            <RefreshCw size={13} />
+          )}
+        </button>
+      </div>
+
+      <MetaText>
+        {filteredRepos.length} of {repos.length} repositor
+        {repos.length === 1 ? "y" : "ies"}
+      </MetaText>
+
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          maxHeight: 380,
+          overflowY: "auto",
+          paddingRight: 4,
+        }}
+      >
+        {filteredRepos.length === 0 ? (
+          <MetaText>No repositories match “{ghQuery}”.</MetaText>
+        ) : (
+          filteredRepos.map((r) => {
+            const isPicking = pickingFullName === r.full_name;
+            const isAnyPicking = pickingFullName !== null;
+            return (
+              <button
+                key={r.id}
+                onClick={() => onPick(r)}
+                disabled={isAnyPicking}
+                style={{
+                  all: "unset",
+                  cursor: isAnyPicking ? "wait" : "pointer",
+                  display: "block",
+                  padding: "12px 14px",
+                  background: "var(--rs-surface-1)",
+                  border: "1px solid var(--rs-hairline)",
+                  borderRadius: "var(--rs-radius-md)",
+                  opacity: isAnyPicking && !isPicking ? 0.5 : 1,
+                  transition:
+                    "background var(--rs-dur-fast) var(--rs-ease-standard), border-color var(--rs-dur-fast) var(--rs-ease-standard)",
+                }}
+                onMouseEnter={(e) => {
+                  if (isAnyPicking) return;
+                  e.currentTarget.style.background = "var(--rs-surface-2)";
+                  e.currentTarget.style.borderColor =
+                    "var(--rs-hairline-strong)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "var(--rs-surface-1)";
+                  e.currentTarget.style.borderColor = "var(--rs-hairline)";
+                }}
+              >
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      style={{
+                        fontFamily: "var(--rs-font-mono)",
+                        fontSize: "var(--rs-text-body)",
+                        color: "var(--rs-text-primary)",
+                      }}
+                    >
+                      {r.full_name}
+                    </span>
+                    {r.private && (
+                      <Tag size="sm">
+                        <Lock size={10} /> Private
+                      </Tag>
+                    )}
+                    {r.fork && (
+                      <Tag size="sm">
+                        <GitFork size={10} /> Fork
+                      </Tag>
+                    )}
+                    {r.archived && <Tag size="sm">Archived</Tag>}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {r.language && <Tag size="sm">{r.language}</Tag>}
+                    {r.stargazers_count > 0 && (
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: "var(--rs-text-meta)",
+                          color: "var(--rs-text-muted)",
+                        }}
+                      >
+                        <Star size={11} />
+                        {r.stargazers_count}
+                      </span>
+                    )}
+                    {isPicking ? (
+                      <Loader2 className="animate-spin" size={13} />
+                    ) : (
+                      <ArrowRight size={13} color="var(--rs-text-muted)" />
+                    )}
+                  </div>
+                </div>
+                {r.description && (
+                  <p
+                    style={{
+                      margin: "4px 0 0",
+                      fontSize: "var(--rs-text-meta)",
+                      lineHeight: "var(--rs-leading-relaxed)",
+                      color: "var(--rs-text-secondary)",
+                    }}
+                  >
+                    {r.description}
+                  </p>
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function UploadPage() {
   const navigate = useNavigate();
-  const { setActiveRepo } = useAppStore();
-  const [mode, setMode] = useState<Mode>("github");
+  const { setActiveRepo, user } = useAppStore();
+
+  const hasGithubToken =
+    typeof window !== "undefined" &&
+    !!localStorage.getItem("github_access_token");
+  const isSignedInWithGithub = !!user && hasGithubToken;
+
+  const [mode, setMode] = useState<Mode>(
+    isSignedInWithGithub ? "mygithub" : "github",
+  );
   const [url, setUrl] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [token, setToken] = useState("");
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // GitHub repos listing state
+  const [ghRepos, setGhRepos] = useState<GithubRepo[] | null>(null);
+  const [ghLoading, setGhLoading] = useState(false);
+  const [ghError, setGhError] = useState<string | null>(null);
+  const [ghQuery, setGhQuery] = useState("");
+  const [pickingFullName, setPickingFullName] = useState<string | null>(null);
+
+  const loadGithubRepos = useCallback(async () => {
+    setGhLoading(true);
+    setGhError(null);
+    try {
+      const data = await listGithubRepos();
+      setGhRepos(data.items);
+    } catch (e) {
+      setGhRepos(null);
+      setGhError(
+        e instanceof Error ? e.message : "Failed to load GitHub repositories.",
+      );
+    } finally {
+      setGhLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (
+      mode === "mygithub" &&
+      isSignedInWithGithub &&
+      ghRepos === null &&
+      !ghLoading
+    ) {
+      loadGithubRepos();
+    }
+  }, [mode, isSignedInWithGithub, ghRepos, ghLoading, loadGithubRepos]);
+
+  const filteredRepos = useMemo(() => {
+    if (!ghRepos) return [];
+    const q = ghQuery.trim().toLowerCase();
+    if (!q) return ghRepos;
+    return ghRepos.filter(
+      (r) =>
+        r.full_name.toLowerCase().includes(q) ||
+        (r.description ?? "").toLowerCase().includes(q) ||
+        (r.language ?? "").toLowerCase().includes(q),
+    );
+  }, [ghRepos, ghQuery]);
+
+  const pickGithubRepo = async (r: GithubRepo) => {
+    if (pickingFullName) return;
+    setPickingFullName(r.full_name);
+    setError(null);
+    try {
+      const accessToken =
+        typeof window !== "undefined"
+          ? (localStorage.getItem("github_access_token") ?? undefined)
+          : undefined;
+      const repo = await createRepository({
+        name: r.full_name,
+        url: r.html_url,
+        access_token: r.private && accessToken ? accessToken : undefined,
+      });
+      setActiveRepo(repo.id);
+      navigate("/app/progress");
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "Failed to start analysis for this repo.",
+      );
+      setPickingFullName(null);
+    }
+  };
 
   const handleGithub = async () => {
     if (!url.trim() || loading) return;
@@ -255,7 +694,22 @@ export function UploadPage() {
           )}
 
           <div style={{ marginTop: 22 }}>
-            {mode === "github" ? (
+            {mode === "mygithub" ? (
+              <MyGithubTab
+                isSignedIn={isSignedInWithGithub}
+                ghLoading={ghLoading}
+                ghError={ghError}
+                ghRepos={ghRepos}
+                filteredRepos={filteredRepos}
+                ghQuery={ghQuery}
+                onChangeQuery={setGhQuery}
+                onRefresh={loadGithubRepos}
+                onPick={pickGithubRepo}
+                pickingFullName={pickingFullName}
+                onSwitchToUrl={() => setMode("github")}
+                onSignIn={() => navigate("/sign-in")}
+              />
+            ) : mode === "github" ? (
               <div
                 style={{ display: "flex", flexDirection: "column", gap: 14 }}
               >

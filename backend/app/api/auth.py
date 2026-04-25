@@ -15,7 +15,7 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.config import get_settings
@@ -227,3 +227,84 @@ async def github_callback(
     )
     response.delete_cookie("gh_oauth_state")
     return response
+
+
+def _extract_bearer(authorization: str | None) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing GitHub access token")
+    parts = authorization.strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() not in {"bearer", "token"}:
+        raise HTTPException(status_code=401, detail="Invalid Authorization header")
+    token = parts[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Empty GitHub access token")
+    return token
+
+
+@router.get("/github/repos")
+async def github_repos(
+    authorization: str | None = Header(default=None),
+    visibility: str = Query("all", pattern="^(all|public|private)$"),
+    sort: str = Query("updated", pattern="^(created|updated|pushed|full_name)$"),
+    per_page: int = Query(100, ge=1, le=100),
+) -> JSONResponse:
+    """List the signed-in user's GitHub repositories.
+
+    Reads the access token from the `Authorization: Bearer <token>` header.
+    The token is the one issued by `/auth/github/callback` and stored on the
+    frontend in `localStorage["github_access_token"]`.
+    """
+
+    token = _extract_bearer(authorization)
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        res = await client.get(
+            "https://api.github.com/user/repos",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            params={
+                "visibility": visibility,
+                "affiliation": "owner,collaborator,organization_member",
+                "sort": sort,
+                "per_page": per_page,
+            },
+        )
+
+    if res.status_code == 401:
+        raise HTTPException(status_code=401, detail="GitHub token rejected. Please sign in again.")
+    if res.status_code == 403:
+        raise HTTPException(status_code=403, detail="GitHub API rate limit or scope error.")
+    if res.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"GitHub returned {res.status_code}",
+        )
+
+    raw = res.json() if isinstance(res.json(), list) else []
+    items = [
+        {
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "full_name": r.get("full_name"),
+            "description": r.get("description"),
+            "html_url": r.get("html_url"),
+            "clone_url": r.get("clone_url"),
+            "private": bool(r.get("private")),
+            "fork": bool(r.get("fork")),
+            "archived": bool(r.get("archived")),
+            "default_branch": r.get("default_branch"),
+            "language": r.get("language"),
+            "stargazers_count": r.get("stargazers_count", 0),
+            "updated_at": r.get("updated_at"),
+            "owner": {
+                "login": (r.get("owner") or {}).get("login"),
+                "avatar_url": (r.get("owner") or {}).get("avatar_url"),
+            },
+        }
+        for r in raw
+    ]
+
+    return JSONResponse({"items": items, "total": len(items)})

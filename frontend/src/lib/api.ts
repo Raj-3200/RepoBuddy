@@ -17,6 +17,28 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ── Types ──
 
+export interface GithubRepo {
+  id: number;
+  name: string;
+  full_name: string;
+  description: string | null;
+  html_url: string;
+  clone_url: string;
+  private: boolean;
+  fork: boolean;
+  archived: boolean;
+  default_branch: string | null;
+  language: string | null;
+  stargazers_count: number;
+  updated_at: string | null;
+  owner: { login: string | null; avatar_url: string | null };
+}
+
+export interface GithubRepoListResponse {
+  items: GithubRepo[];
+  total: number;
+}
+
 export interface Repository {
   id: string;
   name: string;
@@ -265,6 +287,21 @@ export const uploadRepository = (file: File) => {
   }).then(async (res) => {
     if (!res.ok) throw new Error("Upload failed");
     return res.json() as Promise<Repository>;
+  });
+};
+
+export const listGithubRepos = (): Promise<GithubRepoListResponse> => {
+  const token =
+    typeof window !== "undefined"
+      ? localStorage.getItem("github_access_token")
+      : null;
+  if (!token) {
+    return Promise.reject(
+      new Error("Not signed in with GitHub. Please sign in to list repos."),
+    );
+  }
+  return request<GithubRepoListResponse>("/auth/github/repos", {
+    headers: { Authorization: `Bearer ${token}` },
   });
 };
 
