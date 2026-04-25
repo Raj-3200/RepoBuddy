@@ -20,14 +20,95 @@ export function SignIn() {
 
   if (user) return null;
 
+  // Resolve absolute backend URL for the OAuth popup. Cookies set during
+  // /auth/github/login MUST be readable by /auth/github/callback, so the
+  // popup has to talk to the backend directly (not via the Vite proxy).
+  const resolveOAuthLoginUrl = (): string => {
+    const envBase = (import.meta.env.VITE_API_URL ?? "").trim();
+    if (/^https?:\/\//i.test(envBase)) {
+      return `${envBase.replace(/\/$/, "")}/auth/github/login`;
+    }
+    // Local dev fallback — backend on :8000
+    return "http://localhost:8000/api/auth/github/login";
+  };
+
   const handleGithubSignIn = () => {
+    setError(null);
     setLoading(true);
-    // Simulated GitHub OAuth
-    setTimeout(() => {
-      signIn({ name: "GitHub User", email: "user@github.com" });
+
+    const loginUrl = resolveOAuthLoginUrl();
+    const w = 600;
+    const h = 720;
+    const left = window.screenX + (window.outerWidth - w) / 2;
+    const top = window.screenY + (window.outerHeight - h) / 2;
+    const popup = window.open(
+      loginUrl,
+      "github-oauth",
+      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no`,
+    );
+
+    if (!popup) {
+      setLoading(false);
+      setError(
+        "Popup was blocked. Please allow popups for this site and try again.",
+      );
+      return;
+    }
+
+    let handled = false;
+
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.type !== "github-oauth") return;
+      handled = true;
+      window.removeEventListener("message", onMessage);
+      clearInterval(closedTimer);
+
+      if (data.error) {
+        setLoading(false);
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : "GitHub sign-in failed. Please try again.",
+        );
+        return;
+      }
+
+      const ghUser = data.user ?? {};
+      const displayName: string =
+        ghUser.name || ghUser.login || "GitHub User";
+      const email: string =
+        ghUser.email || `${ghUser.login ?? "user"}@users.noreply.github.com`;
+
+      try {
+        if (data.token) {
+          localStorage.setItem("github_access_token", String(data.token));
+        }
+      } catch {
+        /* ignore storage errors */
+      }
+
+      signIn({
+        name: displayName,
+        email,
+        avatarUrl: ghUser.avatar_url,
+      });
       setLoading(false);
       navigate("/app");
-    }, 800);
+    };
+
+    window.addEventListener("message", onMessage);
+
+    // If the user closes the popup without completing, reset state.
+    const closedTimer = window.setInterval(() => {
+      if (popup.closed) {
+        clearInterval(closedTimer);
+        window.removeEventListener("message", onMessage);
+        if (!handled) {
+          setLoading(false);
+        }
+      }
+    }, 500);
   };
 
   const handleRepoSubmit = async (e: React.FormEvent) => {
